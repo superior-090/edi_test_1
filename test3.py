@@ -27,7 +27,7 @@ except ImportError:
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-SIDE_CAM_URL         = "http://192.168.0.106:8080/video"  # Change to your phone IP
+SIDE_CAM_URL         = "https://192.0.0.2:8080/video"  # Change to your phone IP
 CHEAT_THRESHOLD      = 10       # Cumulative score to trigger CHEATING DETECTED
 FACE_MISSING_MAX     = 3.0     # Seconds before face-missing penalty kicks in
 GAZE_AWAY_MAX        = 2.5     # Seconds looking away before penalty
