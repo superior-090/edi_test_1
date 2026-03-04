@@ -5,7 +5,7 @@ from ultralytics import YOLO
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-SIDE_CAM_URL = "http://192.168.0.102:8080/video"   # Change IP
+SIDE_CAM_URL = "https://192.168.88.167:8080/video"   # Change IP
 CHEAT_THRESHOLD = 10
 FACE_MISSING_MAX = 3.0
 
