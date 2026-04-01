@@ -29,7 +29,7 @@ class Config:
     """Central configuration for all system parameters."""
     
     # Camera settings
-    SIDE_CAM_URL: str = "https://192.168.88.30:8080/video"
+    SIDE_CAM_URL: str = "https://192.168.0.111:8080/video"
     RESIZE_WIDTH_FRONT: int = 640
     RESIZE_WIDTH_SIDE: int = 640
     

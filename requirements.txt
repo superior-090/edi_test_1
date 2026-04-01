@@ -1,0 +1,16 @@
+# ── API Server ─────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9      # required for File() / UploadFile in FastAPI
+
+# ── AI / ML ────────────────────────────────────
+ultralytics>=8.0.0           # YOLOv8 — loads your yolov8s.pt / yolov8n.pt
+mediapipe>=0.10.0            # face mesh + hand detection
+opencv-python>=4.9.0         # frame decoding and image processing
+
+# ── Core numerics ──────────────────────────────
+numpy>=1.26.0
+
+# ── HTTP (used internally by ultralytics model downloader) ─
+httpx>=0.27.0
+requests>=2.31.0
