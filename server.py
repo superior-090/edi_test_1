@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import time
+import httpx
 from typing import Dict
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +24,9 @@ from test6 import (
 # APP SETUP
 # ═══════════════════════════════════════════════
 app = FastAPI(title="ProctorAI API", version="2.0")
+
+# ── Cloud backend URL (update after Render deploy) ──
+CLOUD_API_URL = "https://proctorai-api.onrender.com"
 
 app.add_middleware(
     CORSMiddleware,
@@ -155,6 +159,22 @@ async def upload_frame(
     sessions[session_id]["message"] = message
     sessions[session_id]["last_frame"] = frame
     sessions[session_id]["timestamp"] = time.time()
+
+    # ── Forward result to Render cloud backend ──
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"{CLOUD_API_URL}/proctor/update",
+                json={
+                    "session_id": session_id,
+                    "cheating": cheating,
+                    "cheat_type": "PHONE" if cheating else "",
+                    "message": message,
+                    "cheat_score_delta": 10.0 if cheating else 0.0,
+                },
+            )
+    except Exception as e:
+        print(f"[WARN] Cloud push failed: {e}")
 
     return {"cheating": cheating, "message": message}
 
