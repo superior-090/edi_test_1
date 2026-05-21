@@ -1,0 +1,157 @@
+{
+  "session_duration_secs": 37.9,
+  "cumulative_cheat_score": 30,
+  "phone_detections": 0,
+  "multi_face_events": 33,
+  "extra_person_events": 0,
+  "face_missing_secs": 0.0,
+  "gaze_away_secs": 0.0,
+  "risk_level": "LOW",
+  "events": [
+    {
+      "time": "2026-02-24 22:34:05",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:09",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:11",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:13",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:13",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223413"
+    },
+    {
+      "time": "2026-02-24 22:34:14",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223414"
+    },
+    {
+      "time": "2026-02-24 22:34:15",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223415"
+    },
+    {
+      "time": "2026-02-24 22:34:15",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:16",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223416"
+    },
+    {
+      "time": "2026-02-24 22:34:17",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223417"
+    },
+    {
+      "time": "2026-02-24 22:34:18",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223418"
+    },
+    {
+      "time": "2026-02-24 22:34:18",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:19",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223419"
+    },
+    {
+      "time": "2026-02-24 22:34:20",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223420"
+    },
+    {
+      "time": "2026-02-24 22:34:21",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223421"
+    },
+    {
+      "time": "2026-02-24 22:34:21",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:22",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223422"
+    },
+    {
+      "time": "2026-02-24 22:34:23",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223423"
+    },
+    {
+      "time": "2026-02-24 22:34:24",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223424"
+    },
+    {
+      "time": "2026-02-24 22:34:24",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:25",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223425"
+    },
+    {
+      "time": "2026-02-24 22:34:26",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223426"
+    },
+    {
+      "time": "2026-02-24 22:34:26",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:27",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223427"
+    },
+    {
+      "time": "2026-02-24 22:34:28",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223428"
+    },
+    {
+      "time": "2026-02-24 22:34:29",
+      "event": "MULTIPLE_FACES",
+      "detail": "2 faces detected"
+    },
+    {
+      "time": "2026-02-24 22:34:29",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223429"
+    },
+    {
+      "time": "2026-02-24 22:34:30",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223430"
+    },
+    {
+      "time": "2026-02-24 22:34:31",
+      "event": "EVIDENCE_SAVED",
+      "detail": "20260224_223431"
+    }
+  ]
+}

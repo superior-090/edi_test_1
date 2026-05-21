@@ -10,7 +10,7 @@ from ..schemas import DetectionResponse, ProctorSimpleResponse, ProctorUpdateReq
 from ..security import get_db, get_current_user
 from ..services.ai_service import ai_service
 from ..services.side_camera import read_side_camera_frame
-from ..state import manager, store_frame, store_side_frame
+from ..state import clear_side_frame, manager, store_frame, store_side_frame
 
 router = APIRouter(prefix="/proctor", tags=["proctor"])
 
@@ -101,6 +101,7 @@ async def upload_frame(
             ]
             session.side_camera_status = "ONLINE"
         else:
+            clear_side_frame(session_id)
             session.side_camera_status = "OFFLINE"
             session.is_active = False
             session.is_terminated = True
@@ -233,6 +234,7 @@ async def check_side_camera(
         await manager.broadcast(session_id, payload)
         return payload
 
+    clear_side_frame(session_id)
     session.side_camera_status = "OFFLINE"
     session.is_active = False
     session.is_terminated = True

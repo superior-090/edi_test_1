@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -174,13 +175,19 @@ class _SnapshotFeedState extends State<_SnapshotFeed> {
   @override
   Widget build(BuildContext context) {
     final api = context.read<AppState>().api;
-    final url = widget.side
-        ? api.getSideSnapshotUrl(widget.sessionId, _cacheKey)
-        : api.getSnapshotUrl(widget.sessionId, _cacheKey);
+    final String url;
+    if (kIsWeb && widget.side) {
+      url = api.getSideStreamUrl(widget.sessionId);
+    } else {
+      url = widget.side
+          ? api.getSideSnapshotUrl(widget.sessionId, _cacheKey)
+          : api.getSnapshotUrl(widget.sessionId, _cacheKey);
+    }
     return Image.network(
       url,
       fit: BoxFit.contain,
       gaplessPlayback: true,
+      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
       errorBuilder: (context, error, stackTrace) => Center(
         child: Text(
           widget.emptyText,

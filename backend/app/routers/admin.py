@@ -2,15 +2,18 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
+import cv2
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 from jose import JWTError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal
 from ..models import Event, Session as SessionModel, User
 from ..schemas import DashboardStats, EventOut, SessionOut
 from ..security import decode_token_without_db, get_db, require_role
+from ..services.side_camera import get_latest_side_camera_frame
 from ..state import (
     latest_annotated_frames,
     latest_frames,
@@ -196,15 +199,39 @@ def snapshot(session_id: str):
     frame = latest_annotated_frames.get(session_id) or latest_frames.get(session_id)
     if not frame:
         raise HTTPException(status_code=404, detail="Frame not available yet")
-    return Response(content=frame, media_type="image/jpeg")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _encode_frame(frame):
+    ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    return buffer.tobytes() if ok else None
+
+
+def _side_frame(session_id: str, db: Session):
+    session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session is not None and session.side_camera_url:
+        ok, frame = get_latest_side_camera_frame(session.side_camera_url)
+        if ok:
+            encoded = _encode_frame(frame)
+            if encoded:
+                return encoded
+    return latest_side_annotated_frames.get(session_id) or latest_side_frames.get(session_id)
 
 
 def _side_stream(session_id: str):
-    while True:
-        frame = latest_side_annotated_frames.get(session_id) or latest_side_frames.get(session_id)
-        if frame:
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        time.sleep(0.25)
+    db = SessionLocal()
+    try:
+        while True:
+            frame = _side_frame(session_id, db)
+            if frame:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            time.sleep(0.1)
+    finally:
+        db.close()
 
 
 @router.get("/admin/stream/{session_id}/side")
@@ -213,11 +240,18 @@ def side_stream(session_id: str):
 
 
 @router.get("/admin/snapshot/{session_id}/side")
-def side_snapshot(session_id: str):
-    frame = latest_side_annotated_frames.get(session_id) or latest_side_frames.get(session_id)
+def side_snapshot(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    frame = _side_frame(session_id, db)
     if not frame:
         raise HTTPException(status_code=404, detail="Side frame not available yet")
-    return Response(content=frame, media_type="image/jpeg")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/admin/session/{session_id}/approve-rejoin", response_model=SessionOut)

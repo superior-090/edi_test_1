@@ -64,6 +64,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   ];
 
   CameraController? _cameraController;
+  Future<void>? _cameraInitialization;
   WebSocketChannel? _channel;
   Timer? _captureTimer;
   Timer? _sideCheckTimer;
@@ -75,10 +76,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
 
   int _currentIndex = 0;
   int _remainingSeconds = 60 * 60;
-  int _warningCount = 0;
-  int _tabSwitchCount = 0;
   double _cheatScore = 0;
-  double _confidence = 0;
   bool _cameraReady = false;
   bool _monitoringStarted = false;
   bool _uploading = false;
@@ -86,10 +84,9 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   bool _connected = false;
   bool _submitting = false;
   DateTime? _lastDisconnectLogAt;
+  String? _cameraError;
   String _aiMessage = 'AI monitoring active';
-  String _riskLevel = 'LOW';
   String _candidateStatus = 'MONITORING';
-  String _cheatType = '';
   String _sideCameraStatus = 'UNKNOWN';
 
   @override
@@ -98,6 +95,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _sessionId = '${widget.studentId}-${DateTime.now().millisecondsSinceEpoch}';
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    unawaited(_ensureCameraInitialized());
     _startExam();
   }
 
@@ -135,32 +133,62 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   Future<void> _activateMonitoring() async {
     if (_monitoringStarted) return;
     _monitoringStarted = true;
-    await _initializeCamera();
     _startSideCameraWatchdog();
     _startClock();
+    await _ensureCameraInitialized();
+    if (_cameraReady) {
+      _startFrameUpload();
+    }
+  }
+
+  Future<void> _ensureCameraInitialized() {
+    return _cameraInitialization ??= _initializeCamera();
   }
 
   Future<void> _initializeCamera() async {
-    final cameras = await availableCameras();
-    if (cameras.isEmpty) {
-      setState(() => _aiMessage = 'No camera detected');
-      return;
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        _setCameraFailure('No front camera detected');
+        return;
+      }
+
+      final front = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+
+      final controller = CameraController(
+        front,
+        ResolutionPreset.low,
+        enableAudio: false,
+      );
+      _cameraController = controller;
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _cameraError = null;
+        _cameraReady = true;
+      });
+    } on CameraException catch (error) {
+      _setCameraFailure(
+        'Front camera unavailable: ${error.description ?? error.code}',
+      );
+    } catch (error) {
+      _setCameraFailure('Front camera unavailable: $error');
     }
+  }
 
-    final front = cameras.firstWhere(
-      (camera) => camera.lensDirection == CameraLensDirection.front,
-      orElse: () => cameras.first,
-    );
-
-    _cameraController = CameraController(
-      front,
-      ResolutionPreset.low,
-      enableAudio: false,
-    );
-    await _cameraController!.initialize();
+  void _setCameraFailure(String message) {
     if (!mounted) return;
-    setState(() => _cameraReady = true);
-    _startFrameUpload();
+    setState(() {
+      _cameraError = message;
+      _cameraReady = false;
+      _aiMessage = message;
+    });
   }
 
   void _connectWebSocket() {
@@ -191,11 +219,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   void _handleRealtime(Map<String, dynamic> data) {
     if (!mounted) return;
     setState(() {
-      _warningCount = (data['warning_count'] ?? _warningCount) as int;
       _cheatScore = ((data['cheat_score'] ?? _cheatScore) as num).toDouble();
-      _confidence = ((data['confidence'] ?? _confidence) as num).toDouble();
-      _riskLevel = (data['risk_level'] ?? _riskLevel).toString();
-      _cheatType = (data['cheat_type'] ?? _cheatType).toString();
       _sideCameraStatus =
           (data['side_camera_status'] ?? _sideCameraStatus).toString();
       _candidateStatus =
@@ -230,51 +254,57 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   void _startFrameUpload() {
-    _captureTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      final controller = _cameraController;
-      if (_uploading ||
-          controller == null ||
-          !controller.value.isInitialized ||
-          controller.value.isTakingPicture) {
-        return;
-      }
+    if (_captureTimer != null) return;
+    unawaited(_uploadFrontFrame());
+    _captureTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _uploadFrontFrame(),
+    );
+  }
 
-      _uploading = true;
-      final api = context.read<AppState>().api;
-      try {
-        final image = await controller.takePicture();
-        final bytes = await image.readAsBytes();
-        final result = await api.uploadFrame(
-          bytes,
-          _sessionId,
-          filename: image.name.isEmpty ? 'front-camera.jpg' : image.name,
-        );
-        _handleRealtime(result);
-        if (mounted) setState(() => _connected = true);
-      } catch (_) {
-        if (mounted) {
-          setState(() {
-            _connected = false;
-            _aiMessage =
-                'Network interrupted. Reconnecting monitoring channel.';
-          });
-        }
-        final now = DateTime.now();
-        final shouldLogDisconnect = _lastDisconnectLogAt == null ||
-            now.difference(_lastDisconnectLogAt!) > const Duration(seconds: 20);
-        if (shouldLogDisconnect) {
-          _lastDisconnectLogAt = now;
-          await _logEvent(
-            'DISCONNECT',
-            'Candidate monitoring connection interrupted',
-            severity: 'MEDIUM',
-            scoreDelta: 4,
-          );
-        }
-      } finally {
-        _uploading = false;
+  Future<void> _uploadFrontFrame() async {
+    final controller = _cameraController;
+    if (_uploading ||
+        controller == null ||
+        !controller.value.isInitialized ||
+        controller.value.isTakingPicture) {
+      return;
+    }
+
+    _uploading = true;
+    final api = context.read<AppState>().api;
+    try {
+      final image = await controller.takePicture();
+      final bytes = await image.readAsBytes();
+      final result = await api.uploadFrame(
+        bytes,
+        _sessionId,
+        filename: image.name.isEmpty ? 'front-camera.jpg' : image.name,
+      );
+      _handleRealtime(result);
+      if (mounted) setState(() => _connected = true);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _connected = false;
+          _aiMessage = 'Network interrupted. Reconnecting monitoring channel.';
+        });
       }
-    });
+      final now = DateTime.now();
+      final shouldLogDisconnect = _lastDisconnectLogAt == null ||
+          now.difference(_lastDisconnectLogAt!) > const Duration(seconds: 20);
+      if (shouldLogDisconnect) {
+        _lastDisconnectLogAt = now;
+        await _logEvent(
+          'DISCONNECT',
+          'Candidate monitoring connection interrupted',
+          severity: 'MEDIUM',
+          scoreDelta: 4,
+        );
+      }
+    } finally {
+      _uploading = false;
+    }
   }
 
   void _startSideCameraWatchdog() {
@@ -316,14 +346,12 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.hidden) {
-      _tabSwitchCount++;
       _logEvent(
         'TAB_SWITCH',
         'Candidate left the exam window',
         severity: 'HIGH',
         scoreDelta: 15,
       );
-      if (mounted) setState(() {});
     }
   }
 
@@ -550,12 +578,6 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildMonitorPanel() {
-    final alertColor = _riskLevel == 'CRITICAL' || _riskLevel == 'HIGH'
-        ? Colors.redAccent
-        : _riskLevel == 'MEDIUM'
-        ? Colors.orangeAccent
-        : Colors.greenAccent;
-
     return Column(
       children: [
         AspectRatio(
@@ -564,18 +586,10 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
             decoration: BoxDecoration(
               color: Colors.black,
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: alertColor, width: 2),
-              boxShadow: [
-                BoxShadow(
-                  color: alertColor.withValues(alpha: 0.22),
-                  blurRadius: 18,
-                ),
-              ],
+              border: Border.all(color: Colors.cyanAccent, width: 2),
             ),
             clipBehavior: Clip.antiAlias,
-            child: _cameraReady
-                ? CameraPreview(_cameraController!)
-                : const Center(child: CircularProgressIndicator()),
+            child: _buildFrontCameraPreview(),
           ),
         ),
         const SizedBox(height: 12),
@@ -604,7 +618,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.radar, color: alertColor),
+                    const Icon(Icons.radar, color: Colors.cyanAccent),
                     const SizedBox(width: 8),
                     const Expanded(
                       child: Text(
@@ -617,33 +631,8 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
                 const SizedBox(height: 14),
                 _Metric(
                   label: 'Candidate status',
-                  value: _candidateStatus,
-                  color: alertColor,
-                ),
-                _Metric(
-                  label: 'Risk level',
-                  value: _riskLevel,
-                  color: alertColor,
-                ),
-                _Metric(
-                  label: 'Cheating probability',
-                  value: '${_cheatScore.toStringAsFixed(0)}%',
-                  color: alertColor,
-                ),
-                _Metric(
-                  label: 'Confidence',
-                  value: '${(_confidence * 100).toStringAsFixed(0)}%',
+                  value: _studentCandidateStatus,
                   color: Colors.cyanAccent,
-                ),
-                _Metric(
-                  label: 'Warnings',
-                  value: '$_warningCount',
-                  color: Colors.orangeAccent,
-                ),
-                _Metric(
-                  label: 'Cheat type',
-                  value: _cheatType.isEmpty ? 'None' : _cheatType,
-                  color: alertColor,
                 ),
                 _Metric(
                   label: 'Side camera',
@@ -652,16 +641,11 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
                       ? Colors.greenAccent
                       : Colors.orangeAccent,
                 ),
-                _Metric(
-                  label: 'Tab switches',
-                  value: '$_tabSwitchCount',
-                  color: Colors.redAccent,
-                ),
                 const Divider(height: 22),
                 Text(
-                  _aiMessage,
-                  style: TextStyle(
-                    color: alertColor,
+                  _studentMonitoringMessage,
+                  style: const TextStyle(
+                    color: Colors.white70,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -677,6 +661,44 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     final minutes = (_remainingSeconds ~/ 60).toString().padLeft(2, '0');
     final seconds = (_remainingSeconds % 60).toString().padLeft(2, '0');
     return '$minutes:$seconds';
+  }
+
+  String get _studentMonitoringMessage {
+    if (_cameraError != null) return _cameraError!;
+    if (!_connected) return _aiMessage;
+    if (!_monitoringStarted) return _aiMessage;
+    return _sideCameraStatus == 'ONLINE'
+        ? 'Monitoring connection active.'
+        : 'Waiting for side camera connection.';
+  }
+
+  String get _studentCandidateStatus {
+    return switch (_candidateStatus) {
+      'REJOIN_PENDING' => 'WAITING FOR APPROVAL',
+      'REJOIN_DENIED' => 'REJOIN DENIED',
+      'SUBMITTED' => 'SUBMITTED',
+      'TERMINATED' => 'CLOSED',
+      _ => 'MONITORING',
+    };
+  }
+
+  Widget _buildFrontCameraPreview() {
+    if (_cameraReady && _cameraController != null) {
+      return CameraPreview(_cameraController!);
+    }
+    if (_cameraError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            _cameraError!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ),
+      );
+    }
+    return const Center(child: CircularProgressIndicator());
   }
 }
 
@@ -702,7 +724,7 @@ class _SnapshotFeedState extends State<_SnapshotFeed> {
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(const Duration(milliseconds: 700), (_) {
+    _timer = Timer.periodic(const Duration(milliseconds: 400), (_) {
       if (mounted) setState(() => _cacheKey++);
     });
   }
@@ -723,6 +745,7 @@ class _SnapshotFeedState extends State<_SnapshotFeed> {
       url,
       fit: BoxFit.contain,
       gaplessPlayback: true,
+      webHtmlElementStrategy: WebHtmlElementStrategy.prefer,
       errorBuilder: (context, error, stackTrace) => Center(
         child: Text(
           widget.emptyText,
