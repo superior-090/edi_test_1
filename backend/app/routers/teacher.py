@@ -1,17 +1,19 @@
 import csv
 import html
 import io
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ..models import (
     Event,
     Exam,
+    Question,
     QuestionImage,
     Result,
     Session as SessionModel,
@@ -23,7 +25,10 @@ from ..models import (
 from ..schemas import (
     ExamIn,
     ExamOut,
+    QuestionIn,
     QuestionImageOut,
+    QuestionOrderRequest,
+    QuestionOut,
     ResultOut,
     SubjectIn,
     SubjectOut,
@@ -34,6 +39,7 @@ from ..schemas import (
 from ..security import get_db, require_role
 
 router = APIRouter(prefix="/teacher", tags=["teacher"])
+logger = logging.getLogger(__name__)
 
 QUESTION_IMAGE_DIR = Path(__file__).resolve().parents[2] / "uploads" / "question_images"
 ALLOWED_IMAGE_TYPES = {
@@ -85,7 +91,9 @@ def _exam_for_teacher(db: Session, exam_id: int, teacher_id: int) -> Exam:
 
 def _exam_out(db: Session, exam: Exam) -> dict:
     subject = db.query(Subject).filter(Subject.id == exam.subject_id).first()
-    question_count = db.query(QuestionImage).filter(QuestionImage.exam_id == exam.id).count()
+    question_count = db.query(Question).filter(Question.exam_id == exam.id).count()
+    if question_count == 0:
+        question_count = db.query(QuestionImage).filter(QuestionImage.exam_id == exam.id).count()
     data = ExamOut.model_validate(exam).model_dump(mode="json")
     if subject is not None:
         data.update({
@@ -153,6 +161,36 @@ def _resolve_image_type(file: UploadFile, contents: bytes) -> str:
 
 def _teacher_exam_ids(db: Session, teacher_id: int) -> list[int]:
     return [row.id for row in db.query(Exam.id).filter(Exam.teacher_id == teacher_id).all()]
+
+
+def _question_for_teacher(db: Session, question_id: int, teacher_id: int) -> Question:
+    question = (
+        db.query(Question)
+        .join(Exam, Question.exam_id == Exam.id)
+        .filter(Question.id == question_id, Exam.teacher_id == teacher_id)
+        .first()
+    )
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return question
+
+
+def _apply_question(question: Question, payload: QuestionIn) -> None:
+    question_text = payload.question_text.strip()
+    option_a = payload.option_a.strip()
+    option_b = payload.option_b.strip()
+    option_c = payload.option_c.strip()
+    option_d = payload.option_d.strip()
+    if not all([question_text, option_a, option_b, option_c, option_d]):
+        raise HTTPException(status_code=422, detail="Question text and all four options are required")
+    question.question_text = question_text
+    question.option_a = option_a
+    question.option_b = option_b
+    question.option_c = option_c
+    question.option_d = option_d
+    question.correct_option = payload.correct_option.strip().upper()
+    question.marks = payload.marks
+    question.explanation = payload.explanation.strip()
 
 
 def _result_rows(
@@ -266,6 +304,7 @@ def create_subject(
         semester=payload.semester.strip(),
         division=payload.division.strip().upper(),
         created_by_teacher_id=teacher.id,
+        teacher_id=teacher.id,
     )
     db.add(subject)
     db.commit()
@@ -330,6 +369,7 @@ def create_exam(
     _subject_for_teacher(db, payload.subject_id, teacher.id)
     exam = Exam(
         title=payload.title.strip(),
+        description=payload.description.strip(),
         subject_id=payload.subject_id,
         teacher_id=teacher.id,
         duration_minutes=payload.duration_minutes,
@@ -337,11 +377,19 @@ def create_exam(
         end_time=payload.end_time,
         total_marks=payload.total_marks,
         instructions=payload.instructions,
+        question_image_enabled=payload.question_image_enabled,
         is_published=payload.is_published,
     )
     db.add(exam)
     db.commit()
     db.refresh(exam)
+    logger.info(
+        "Exam created; exam_id=%s teacher_id=%s subject_id=%s published=%s",
+        exam.id,
+        teacher.id,
+        exam.subject_id,
+        exam.is_published,
+    )
     return _exam_out(db, exam)
 
 
@@ -356,22 +404,30 @@ def update_exam(
     exam = _exam_for_teacher(db, exam_id, teacher.id)
     _subject_for_teacher(db, payload.subject_id, teacher.id)
     exam.title = payload.title.strip()
+    exam.description = payload.description.strip()
     exam.subject_id = payload.subject_id
     exam.duration_minutes = payload.duration_minutes
     exam.start_time = payload.start_time
     exam.end_time = payload.end_time
     exam.total_marks = payload.total_marks
     exam.instructions = payload.instructions
+    exam.question_image_enabled = payload.question_image_enabled
     exam.is_published = payload.is_published
     db.commit()
     db.refresh(exam)
+    logger.info(
+        "Exam updated; exam_id=%s teacher_id=%s published=%s",
+        exam.id,
+        teacher.id,
+        exam.is_published,
+    )
     return _exam_out(db, exam)
 
 
 @router.post("/exams/{exam_id}/publish")
 def publish_exam(
     exam_id: int,
-    published: bool = Form(True),
+    published: bool = Query(True),
     db: Session = Depends(get_db),
     user: User = Depends(require_role("teacher")),
 ):
@@ -380,6 +436,12 @@ def publish_exam(
     exam.is_published = published
     db.commit()
     db.refresh(exam)
+    logger.info(
+        "Exam publish status changed; exam_id=%s teacher_id=%s published=%s",
+        exam.id,
+        teacher.id,
+        exam.is_published,
+    )
     return _exam_out(db, exam)
 
 
@@ -396,9 +458,172 @@ def delete_exam(
         if image_path.exists():
             image_path.unlink()
         db.delete(image)
+    for question in db.query(Question).filter(Question.exam_id == exam.id).all():
+        if question.question_image:
+            image_path = QUESTION_IMAGE_DIR / question.question_image
+            if image_path.exists():
+                image_path.unlink()
+        db.delete(question)
     db.delete(exam)
     db.commit()
     return {"status": "deleted", "id": exam_id}
+
+
+@router.get("/exams/{exam_id}/questions", response_model=list[QuestionOut])
+def list_questions(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    _exam_for_teacher(db, exam_id, teacher.id)
+    return (
+        db.query(Question)
+        .filter(Question.exam_id == exam_id)
+        .order_by(Question.sort_order.asc(), Question.id.asc())
+        .all()
+    )
+
+
+@router.post("/exams/{exam_id}/questions", response_model=QuestionOut)
+def create_question(
+    exam_id: int,
+    payload: QuestionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    _exam_for_teacher(db, exam_id, teacher.id)
+    current_max = (
+        db.query(Question.sort_order)
+        .filter(Question.exam_id == exam_id)
+        .order_by(Question.sort_order.desc())
+        .first()
+    )
+    question = Question(
+        exam_id=exam_id,
+        question_text="",
+        option_a="",
+        option_b="",
+        option_c="",
+        option_d="",
+        correct_option="A",
+        sort_order=(current_max[0] + 1) if current_max else 1,
+    )
+    _apply_question(question, payload)
+    db.add(question)
+    db.commit()
+    db.refresh(question)
+    logger.info(
+        "Question inserted; question_id=%s exam_id=%s teacher_id=%s sort_order=%s",
+        question.id,
+        exam_id,
+        teacher.id,
+        question.sort_order,
+    )
+    return question
+
+
+@router.put("/questions/{question_id}", response_model=QuestionOut)
+def update_question(
+    question_id: int,
+    payload: QuestionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    question = _question_for_teacher(db, question_id, teacher.id)
+    _apply_question(question, payload)
+    db.commit()
+    db.refresh(question)
+    logger.info(
+        "Question updated; question_id=%s exam_id=%s teacher_id=%s",
+        question.id,
+        question.exam_id,
+        teacher.id,
+    )
+    return question
+
+
+@router.put("/exams/{exam_id}/questions/reorder", response_model=list[QuestionOut])
+def reorder_questions(
+    exam_id: int,
+    payload: QuestionOrderRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    _exam_for_teacher(db, exam_id, teacher.id)
+    rows = db.query(Question).filter(Question.exam_id == exam_id).all()
+    by_id = {question.id: question for question in rows}
+    if set(payload.question_ids) != set(by_id):
+        raise HTTPException(status_code=422, detail="Reorder must include every exam question")
+    for index, question_id in enumerate(payload.question_ids, start=1):
+        by_id[question_id].sort_order = index
+    db.commit()
+    return (
+        db.query(Question)
+        .filter(Question.exam_id == exam_id)
+        .order_by(Question.sort_order.asc(), Question.id.asc())
+        .all()
+    )
+
+
+@router.delete("/questions/{question_id}")
+def delete_question(
+    question_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    question = _question_for_teacher(db, question_id, teacher.id)
+    exam_id = question.exam_id
+    if question.question_image:
+        image_path = QUESTION_IMAGE_DIR / question.question_image
+        if image_path.exists():
+            image_path.unlink()
+    db.delete(question)
+    db.commit()
+    logger.info(
+        "Question deleted; question_id=%s exam_id=%s teacher_id=%s",
+        question_id,
+        exam_id,
+        teacher.id,
+    )
+    return {"status": "deleted", "id": question_id}
+
+
+@router.post("/questions/{question_id}/image", response_model=QuestionOut)
+async def upload_question_image(
+    question_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    question = _question_for_teacher(db, question_id, teacher.id)
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=422, detail="Question image is empty")
+    content_type = _resolve_image_type(file, contents)
+    QUESTION_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{ALLOWED_IMAGE_TYPES[content_type]}"
+    (QUESTION_IMAGE_DIR / stored_name).write_bytes(contents)
+    if question.question_image:
+        previous = QUESTION_IMAGE_DIR / question.question_image
+        if previous.exists():
+            previous.unlink()
+    question.question_image = stored_name
+    db.commit()
+    db.refresh(question)
+    logger.info(
+        "Question image uploaded; question_id=%s exam_id=%s teacher_id=%s filename=%s",
+        question.id,
+        question.exam_id,
+        teacher.id,
+        stored_name,
+    )
+    return question
 
 
 @router.get("/exams/{exam_id}/question-images", response_model=list[QuestionImageOut])

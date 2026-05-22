@@ -24,19 +24,59 @@ app.add_middleware(
 
 
 def ensure_schema():
-    additions = {
-        "exam_id": "INTEGER",
-        "subject": "VARCHAR DEFAULT 'GENERAL'",
-        "side_camera_url": "VARCHAR DEFAULT ''",
-        "side_camera_status": "VARCHAR DEFAULT 'UNKNOWN'",
-        "approval_status": "VARCHAR DEFAULT 'NOT_REQUIRED'",
-        "approval_note": "TEXT DEFAULT ''",
+    additions_by_table = {
+        "sessions": {
+            "exam_id": "INTEGER",
+            "subject": "VARCHAR DEFAULT 'GENERAL'",
+            "side_camera_url": "VARCHAR DEFAULT ''",
+            "side_camera_status": "VARCHAR DEFAULT 'UNKNOWN'",
+            "approval_status": "VARCHAR DEFAULT 'NOT_REQUIRED'",
+            "approval_note": "TEXT DEFAULT ''",
+        },
+        "users": {
+            "prn": "VARCHAR DEFAULT ''",
+            "branch": "VARCHAR DEFAULT ''",
+            "division": "VARCHAR DEFAULT ''",
+            "year": "VARCHAR DEFAULT ''",
+            "subject_specialization": "VARCHAR DEFAULT ''",
+            "profile_completed": "BOOLEAN DEFAULT FALSE",
+        },
+        "subjects": {
+            "teacher_id": "INTEGER",
+        },
+        "exams": {
+            "description": "TEXT DEFAULT ''",
+            "duration_minutes": "INTEGER DEFAULT 60",
+            "start_time": "DATETIME",
+            "end_time": "DATETIME",
+            "total_marks": "FLOAT DEFAULT 100.0",
+            "instructions": "TEXT DEFAULT ''",
+            "question_image_enabled": "BOOLEAN DEFAULT TRUE",
+            "is_published": "BOOLEAN DEFAULT FALSE",
+        },
+        "questions": {
+            "question_text": "TEXT DEFAULT ''",
+            "question_image": "VARCHAR DEFAULT ''",
+            "option_a": "TEXT DEFAULT ''",
+            "option_b": "TEXT DEFAULT ''",
+            "option_c": "TEXT DEFAULT ''",
+            "option_d": "TEXT DEFAULT ''",
+            "correct_option": "VARCHAR DEFAULT 'A'",
+            "marks": "FLOAT DEFAULT 1.0",
+            "explanation": "TEXT DEFAULT ''",
+            "sort_order": "INTEGER DEFAULT 0",
+        },
     }
     with engine.begin() as connection:
-        existing = {column["name"] for column in inspect(connection).get_columns("sessions")}
-        for column, definition in additions.items():
-            if column not in existing:
-                connection.execute(text(f"ALTER TABLE sessions ADD COLUMN {column} {definition}"))
+        inspector = inspect(connection)
+        existing_tables = set(inspector.get_table_names())
+        for table, additions in additions_by_table.items():
+            if table not in existing_tables:
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table)}
+            for column, definition in additions.items():
+                if column not in existing:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
 
 def seed_users():
     defaults = [
@@ -85,6 +125,7 @@ def seed_users():
                         semester="1",
                         division="A",
                         created_by_teacher_id=teacher_profile.id,
+                        teacher_id=teacher_profile.id,
                     ),
                     Subject(
                         subject_name="AI and Ethics",
@@ -93,6 +134,7 @@ def seed_users():
                         semester="1",
                         division="A",
                         created_by_teacher_id=teacher_profile.id,
+                        teacher_id=teacher_profile.id,
                     ),
                     Subject(
                         subject_name="Digital Security",
@@ -101,6 +143,7 @@ def seed_users():
                         semester="1",
                         division="A",
                         created_by_teacher_id=teacher_profile.id,
+                        teacher_id=teacher_profile.id,
                     ),
                 ]
                 db.add_all(subjects)

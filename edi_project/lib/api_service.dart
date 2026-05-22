@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
@@ -153,6 +154,14 @@ class ApiService {
     return _decodeMapList(response);
   }
 
+  Future<List<Map<String, dynamic>>> getExamQuestions(int examId) async {
+    final response = await http.get(
+      _uri('/session/questions', {'exam_id': '$examId'}),
+      headers: _headers,
+    );
+    return _decodeMapList(response);
+  }
+
   Future<Map<String, dynamic>> getStudentProfile() async {
     final response = await http.get(
       _uri('/student/profile'),
@@ -295,6 +304,100 @@ class ApiService {
     return _decodeMapList(response);
   }
 
+  Future<List<Map<String, dynamic>>> getTeacherQuestions(int examId) async {
+    final response = await http.get(
+      _uri('/teacher/exams/$examId/questions'),
+      headers: _headers,
+    );
+    return _decodeMapList(response);
+  }
+
+  Future<Map<String, dynamic>> createTeacherQuestion(
+    int examId,
+    Map<String, dynamic> payload,
+  ) async {
+    final response = await http.post(
+      _uri('/teacher/exams/$examId/questions'),
+      headers: _headers,
+      body: jsonEncode(payload),
+    );
+    return _decodeMap(response);
+  }
+
+  Future<Map<String, dynamic>> publishTeacherExam(
+    int examId, {
+    required bool published,
+  }) async {
+    final response = await http.post(
+      _uri('/teacher/exams/$examId/publish', {'published': '$published'}),
+      headers: _headers,
+    );
+    return _decodeMap(response);
+  }
+
+  Future<Map<String, dynamic>> updateTeacherQuestion(
+    int questionId,
+    Map<String, dynamic> payload,
+  ) async {
+    final response = await http.put(
+      _uri('/teacher/questions/$questionId'),
+      headers: _headers,
+      body: jsonEncode(payload),
+    );
+    return _decodeMap(response);
+  }
+
+  Future<void> reorderTeacherQuestions(
+    int examId,
+    List<int> questionIds,
+  ) async {
+    final response = await http.put(
+      _uri('/teacher/exams/$examId/questions/reorder'),
+      headers: _headers,
+      body: jsonEncode({'question_ids': questionIds}),
+    );
+    _decodeMapList(response);
+  }
+
+  Future<void> deleteTeacherQuestion(int questionId) async {
+    final response = await http.delete(
+      _uri('/teacher/questions/$questionId'),
+      headers: _headers,
+    );
+    _decodeMap(response);
+  }
+
+  Future<Map<String, dynamic>> uploadTeacherQuestionImage({
+    required int questionId,
+    required QuestionImageUpload image,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      _uri('/teacher/questions/$questionId/image'),
+    );
+    if (token != null && token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        image.bytes,
+        filename: image.filename,
+        contentType: _mediaType(image.contentType),
+      ),
+    );
+    final streamed = await request.send().timeout(const Duration(seconds: 30));
+    final body = await streamed.stream.bytesToString();
+    debugPrint(
+      '[API] POST /teacher/questions/$questionId/image -> '
+      '${streamed.statusCode} ${body.length > 500 ? '${body.substring(0, 500)}...' : body}',
+    );
+    if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
+      return jsonDecode(body) as Map<String, dynamic>;
+    }
+    throw ApiException(_errorMessage(body), streamed.statusCode);
+  }
+
   Future<List<Map<String, dynamic>>> uploadTeacherQuestionImages({
     required int examId,
     required List<QuestionImageUpload> images,
@@ -318,6 +421,10 @@ class ApiService {
     }
     final streamed = await request.send().timeout(const Duration(seconds: 30));
     final body = await streamed.stream.bytesToString();
+    debugPrint(
+      '[API] POST /teacher/exams/$examId/question-images -> '
+      '${streamed.statusCode} ${body.length > 500 ? '${body.substring(0, 500)}...' : body}',
+    );
     if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
       final decoded = jsonDecode(body) as List<dynamic>;
       return decoded
@@ -531,6 +638,18 @@ class ApiService {
     return _decodeMap(response);
   }
 
+  Future<Map<String, dynamic>> autosaveAnswers({
+    required String sessionId,
+    required Map<String, String> answers,
+  }) async {
+    final response = await http.put(
+      _uri('/session/$sessionId/autosave'),
+      headers: _headers,
+      body: jsonEncode({'answers': answers}),
+    );
+    return _decodeMap(response);
+  }
+
   Future<Map<String, dynamic>> submitExam({
     required String sessionId,
     required Map<String, String> answers,
@@ -641,6 +760,13 @@ class ApiService {
     return '$baseUrl/session/question-images/$imageId/file$query';
   }
 
+  String getQuestionAttachmentUrl(int questionId) {
+    final query = token != null && token!.isNotEmpty
+        ? '?token=${Uri.encodeQueryComponent(token!)}'
+        : '';
+    return '$baseUrl/session/questions/$questionId/image$query';
+  }
+
   String getTeacherResultsExportUrl({
     required String format,
     int? subjectId,
@@ -673,6 +799,7 @@ class ApiService {
   }
 
   Map<String, dynamic> _decodeMap(http.Response response) {
+    _debugResponse(response);
     if (response.statusCode >= 200 && response.statusCode < 300) {
       if (response.body.isEmpty) return {};
       return jsonDecode(response.body) as Map<String, dynamic>;
@@ -681,6 +808,7 @@ class ApiService {
   }
 
   List<dynamic> _decodeList(http.Response response) {
+    _debugResponse(response);
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return jsonDecode(response.body) as List<dynamic>;
     }
@@ -688,6 +816,7 @@ class ApiService {
   }
 
   List<Map<String, dynamic>> _decodeMapList(http.Response response) {
+    _debugResponse(response);
     if (response.statusCode >= 200 && response.statusCode < 300) {
       final decoded = jsonDecode(response.body) as List<dynamic>;
       return decoded
@@ -705,6 +834,14 @@ class ApiService {
     } catch (_) {
       return body.isEmpty ? 'Request failed' : body;
     }
+  }
+
+  void _debugResponse(http.Response response) {
+    debugPrint(
+      '[API] ${response.request?.method ?? 'HTTP'} '
+      '${response.request?.url.path ?? ''} -> ${response.statusCode} '
+      '${response.body.length > 500 ? '${response.body.substring(0, 500)}...' : response.body}',
+    );
   }
 
   MediaType _mediaType(String contentType) {

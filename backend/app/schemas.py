@@ -11,6 +11,14 @@ class LoginRequest(BaseModel):
     remember_me: bool = False
 
 
+class RegisterRequest(BaseModel):
+    full_name: str = Field(..., min_length=2)
+    email: EmailStr
+    password: str = Field(..., min_length=6)
+    role: str = "student"
+    username: Optional[str] = None
+
+
 class UserOut(BaseModel):
     id: int
     username: str
@@ -113,6 +121,10 @@ class SubmitExamRequest(BaseModel):
     reason: str = "submitted_by_candidate"
 
 
+class AutosaveAnswersRequest(BaseModel):
+    answers: Dict[str, str] = Field(default_factory=dict)
+
+
 class StudentProfileIn(BaseModel):
     full_name: str = Field(..., min_length=2)
     prn: str = Field(..., min_length=2)
@@ -162,18 +174,21 @@ class SubjectOut(BaseModel):
 
 class ExamIn(BaseModel):
     title: str = Field(..., min_length=2)
+    description: str = ""
     subject_id: int
     duration_minutes: int = Field(60, ge=1)
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     total_marks: float = Field(100.0, ge=0)
     instructions: str = ""
+    question_image_enabled: bool = True
     is_published: bool = False
 
 
 class ExamOut(BaseModel):
     id: int
     title: str
+    description: str = ""
     subject_id: int
     teacher_id: int
     duration_minutes: int
@@ -181,6 +196,7 @@ class ExamOut(BaseModel):
     end_time: Optional[datetime]
     total_marks: float
     instructions: str
+    question_image_enabled: bool = True
     is_published: bool
     created_at: Optional[datetime]
     subject_name: str = ""
@@ -192,6 +208,75 @@ class ExamOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class QuestionIn(BaseModel):
+    question_text: str = Field(..., min_length=1)
+    option_a: str = Field(..., min_length=1)
+    option_b: str = Field(..., min_length=1)
+    option_c: str = Field(..., min_length=1)
+    option_d: str = Field(..., min_length=1)
+    correct_option: str = Field(..., pattern="^[ABCDabcd]$")
+    marks: float = Field(1.0, gt=0)
+    explanation: str = ""
+
+
+class QuestionOrderRequest(BaseModel):
+    question_ids: List[int] = Field(default_factory=list)
+
+
+class QuestionOut(BaseModel):
+    id: int
+    exam_id: int
+    question_text: str
+    question_image: str = ""
+    option_a: str
+    option_b: str
+    option_c: str
+    option_d: str
+    correct_option: str
+    marks: float
+    explanation: str = ""
+    sort_order: int = 0
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class StudentQuestionOut(BaseModel):
+    id: int
+    exam_id: int
+    question_text: str
+    image_url: str = ""
+    option_a: str
+    option_b: str
+    option_c: str
+    option_d: str
+    marks: float
+    sort_order: int = 0
+
+
+class AttemptResultAnswerOut(BaseModel):
+    question_id: int
+    question_text: str
+    selected_option: str = ""
+    correct_option: str
+    is_correct: bool
+    marks_awarded: float
+    marks: float
+    explanation: str = ""
+
+
+class StudentResultOut(BaseModel):
+    attempt_id: int
+    exam_id: int
+    exam_title: str
+    score: float
+    total_marks: float
+    percentage: float
+    submitted_at: Optional[datetime]
+    answers: List[AttemptResultAnswerOut] = Field(default_factory=list)
 
 
 class QuestionImageOut(BaseModel):

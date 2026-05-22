@@ -1,13 +1,16 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..models import Exam, QuestionImage, StudentProfile, Subject, User
+from ..models import Exam, ExamAttempt, Question, QuestionImage, Result, StudentProfile, Subject, User
 from ..schemas import StudentProfileIn, StudentProfileOut
 from ..security import get_current_user, get_db, require_role
 
 router = APIRouter(prefix="/student", tags=["student"])
+logger = logging.getLogger(__name__)
 
 
 def _profile_complete(profile: StudentProfile | None) -> bool:
@@ -75,6 +78,11 @@ def update_profile(
         profile.semester = payload.semester.strip()
         profile.year = payload.year.strip()
     user.full_name = payload.full_name.strip()
+    user.prn = profile.prn
+    user.branch = profile.branch
+    user.division = profile.division
+    user.year = profile.year
+    user.profile_completed = _profile_complete(profile)
     db.commit()
     db.refresh(profile)
     return _profile_payload(profile, user)
@@ -93,9 +101,18 @@ def available_exams(
     rows = (
         db.query(Exam, Subject)
         .join(Subject, Exam.subject_id == Subject.id)
-        .filter(Exam.is_published == True)
+        .filter(Exam.is_published.is_(True))
+        .filter(or_(Exam.end_time.is_(None), Exam.end_time > now))
         .order_by(Exam.created_at.desc())
         .all()
+    )
+    logger.info(
+        "Student exams fetched; user_id=%s profile=%s/%s/%s rows=%s",
+        user.id,
+        profile.branch,
+        profile.division,
+        profile.semester,
+        len(rows),
     )
     exams = []
     for exam, subject in rows:
@@ -105,9 +122,16 @@ def available_exams(
             continue
         if subject.semester and subject.semester != profile.semester:
             continue
-        if exam.end_time and exam.end_time < now:
-            continue
-        question_count = db.query(QuestionImage).filter(QuestionImage.exam_id == exam.id).count()
+        attempt = (
+            db.query(ExamAttempt)
+            .filter(ExamAttempt.exam_id == exam.id, ExamAttempt.student_id == user.id)
+            .order_by(ExamAttempt.started_at.desc())
+            .first()
+        )
+        result = db.query(Result).filter(Result.exam_id == exam.id, Result.student_id == user.id).first()
+        question_count = db.query(Question).filter(Question.exam_id == exam.id).count()
+        if question_count == 0:
+            question_count = db.query(QuestionImage).filter(QuestionImage.exam_id == exam.id).count()
         exams.append({
             "id": exam.id,
             "title": exam.title,
@@ -123,5 +147,8 @@ def available_exams(
             "start_time": exam.start_time,
             "end_time": exam.end_time,
             "question_count": question_count,
+            "attempt_status": attempt.status if attempt else "NOT_STARTED",
+            "score": result.score if result else None,
+            "completed": result is not None,
         })
     return exams

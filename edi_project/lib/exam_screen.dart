@@ -82,10 +82,12 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   Timer? _clockTimer;
   Timer? _reconnectTimer;
   Timer? _heartbeatTimer;
+  Timer? _autosaveTimer;
 
   late final String _sessionId;
   late String _sideCameraUrl;
   final Map<String, String> _answers = {};
+  final Set<String> _reviewQuestionKeys = {};
 
   int _currentIndex = 0;
   late int _remainingSeconds;
@@ -114,14 +116,33 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _sideCameraUrl = widget.sideCameraUrl;
     enableExamCopyGuard();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    unawaited(_loadQuestionImages());
+    unawaited(_loadQuestions());
     unawaited(_ensureCameraInitialized());
     _startExam();
   }
 
-  Future<void> _loadQuestionImages() async {
+  Future<void> _loadQuestions() async {
     try {
       final api = context.read<AppState>().api;
+      if (widget.examId != null) {
+        final questionRows = await api.getExamQuestions(widget.examId!);
+        if (questionRows.isNotEmpty) {
+          if (!mounted) return;
+          setState(() {
+            _questions = questionRows
+                .map<_Question>(
+                  (map) => _Question.fromQuestionJson(
+                    map,
+                    imageUrlForId: api.getQuestionAttachmentUrl,
+                  ),
+                )
+                .toList(growable: false);
+            _currentIndex = 0;
+            _loadingQuestions = false;
+          });
+          return;
+        }
+      }
       final rows = await api.getQuestionImages(
         examId: widget.examId,
         subject: widget.subject,
@@ -137,7 +158,9 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
           )
           .toList(growable: false);
       setState(() {
-        _questions = imageQuestions.isEmpty ? _fallbackQuestions : imageQuestions;
+        _questions = imageQuestions.isEmpty
+            ? _fallbackQuestions
+            : imageQuestions;
         _currentIndex = 0;
         _loadingQuestions = false;
       });
@@ -187,6 +210,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _monitoringStarted = true;
     _startSideCameraWatchdog();
     _startClock();
+    _startAutosave();
     await _ensureCameraInitialized();
     if (_cameraReady) {
       _startFrameUpload();
@@ -335,6 +359,26 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     );
   }
 
+  void _startAutosave() {
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_autosaveAnswers()),
+    );
+  }
+
+  Future<void> _autosaveAnswers() async {
+    if (_answers.isEmpty || _submitted || _submitting) return;
+    try {
+      await context.read<AppState>().api.autosaveAnswers(
+        sessionId: _sessionId,
+        answers: _answers,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Exam autosave failed: $error\n$stackTrace');
+    }
+  }
+
   Future<void> _uploadFrontFrame() async {
     final controller = _cameraController;
     if (_uploading ||
@@ -441,9 +485,11 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _captureTimer?.cancel();
     _sideCheckTimer?.cancel();
     _clockTimer?.cancel();
+    _autosaveTimer?.cancel();
     _captureTimer = null;
     _sideCheckTimer = null;
     _clockTimer = null;
+    _autosaveTimer = null;
     setState(() => _submitting = true);
     final api = context.read<AppState>().api;
     try {
@@ -519,9 +565,11 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _captureTimer?.cancel();
     _sideCheckTimer?.cancel();
     _clockTimer?.cancel();
+    _autosaveTimer?.cancel();
     _captureTimer = null;
     _sideCheckTimer = null;
     _clockTimer = null;
+    _autosaveTimer = null;
     _heartbeatTimer?.cancel();
     _reconnectTimer?.cancel();
     await _channel?.sink.close();
@@ -559,6 +607,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _clockTimer?.cancel();
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
+    _autosaveTimer?.cancel();
     _channel?.sink.close();
     _cameraController?.dispose();
     disableExamCopyGuard();
@@ -574,67 +623,70 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
       child: PopScope(
         canPop: false,
         child: Scaffold(
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          title: Text(widget.examTitle),
-          actions: [
-            _StatusChip(
-              icon: _connected ? Icons.cloud_done : Icons.cloud_off,
-              label: _connected ? 'Connected' : 'Reconnecting',
-              color: _connected ? Colors.greenAccent : Colors.orangeAccent,
-            ),
-            const SizedBox(width: 8),
-            _StatusChip(
-              icon: Icons.timer,
-              label: _timeText,
-              color: Colors.redAccent,
-            ),
-            const SizedBox(width: 12),
-          ],
-        ),
-        body: AiGradientBackground(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 980;
-              final content = Padding(
-                padding: const EdgeInsets.all(18),
-                child: wide
-                    ? Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(flex: 3, child: _buildQuestionPanel(question)),
-                          const SizedBox(width: 16),
-                          SizedBox(
-                            width: 340,
-                            child: SingleChildScrollView(
-                              child: _buildMonitorPanel(),
-                            ),
-                          ),
-                        ],
-                      )
-                    : ListView(
-                        children: [
-                          SizedBox(
-                            height: (constraints.maxHeight * 0.58).clamp(
-                              420.0,
-                              620.0,
-                            ),
-                            child: _buildQuestionPanel(question),
-                          ),
-                          const SizedBox(height: 16),
-                          _buildMonitorPanel(),
-                        ],
-                      ),
-              );
-              return Stack(
-                children: [
-                  content,
-                  if (_sideCameraNeedsReconnect) _buildSideCameraOverlay(),
-                ],
-              );
-            },
+          appBar: AppBar(
+            automaticallyImplyLeading: false,
+            title: Text(widget.examTitle),
+            actions: [
+              _StatusChip(
+                icon: _connected ? Icons.cloud_done : Icons.cloud_off,
+                label: _connected ? 'Connected' : 'Reconnecting',
+                color: _connected ? Colors.greenAccent : Colors.orangeAccent,
+              ),
+              const SizedBox(width: 8),
+              _StatusChip(
+                icon: Icons.timer,
+                label: _timeText,
+                color: Colors.redAccent,
+              ),
+              const SizedBox(width: 12),
+            ],
           ),
-        ),
+          body: AiGradientBackground(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final wide = constraints.maxWidth >= 980;
+                final content = Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: wide
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: _buildQuestionPanel(question),
+                            ),
+                            const SizedBox(width: 16),
+                            SizedBox(
+                              width: 340,
+                              child: SingleChildScrollView(
+                                child: _buildMonitorPanel(),
+                              ),
+                            ),
+                          ],
+                        )
+                      : ListView(
+                          children: [
+                            SizedBox(
+                              height: (constraints.maxHeight * 0.58).clamp(
+                                420.0,
+                                620.0,
+                              ),
+                              child: _buildQuestionPanel(question),
+                            ),
+                            const SizedBox(height: 16),
+                            _buildMonitorPanel(),
+                          ],
+                        ),
+                );
+                return Stack(
+                  children: [
+                    content,
+                    if (_sideCameraNeedsReconnect) _buildSideCameraOverlay(),
+                  ],
+                );
+              },
+            ),
+          ),
         ),
       ),
     );
@@ -644,7 +696,8 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.logicalKey;
     final pressed = HardwareKeyboard.instance.logicalKeysPressed;
-    final command = pressed.contains(LogicalKeyboardKey.controlLeft) ||
+    final command =
+        pressed.contains(LogicalKeyboardKey.controlLeft) ||
         pressed.contains(LogicalKeyboardKey.controlRight) ||
         pressed.contains(LogicalKeyboardKey.metaLeft) ||
         pressed.contains(LogicalKeyboardKey.metaRight);
@@ -691,7 +744,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
             Expanded(
               child: _loadingQuestions
                   ? const Center(child: CircularProgressIndicator())
-                  : question.isImage
+                  : question.isImageOnly
                   ? _buildImageQuestion(question)
                   : _buildTextQuestion(question),
             ),
@@ -704,8 +757,13 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
                 (index) => ChoiceChip(
                   selected: index == _currentIndex,
                   label: Text('${index + 1}'),
-                  avatar: _answers.containsKey(index.toString())
+                  avatar:
+                      _answers.containsKey(_questions[index].answerKey(index))
                       ? const Icon(Icons.check, size: 16)
+                      : _reviewQuestionKeys.contains(
+                          _questions[index].answerKey(index),
+                        )
+                      ? const Icon(Icons.flag, size: 16)
                       : null,
                   onSelected: (_) => setState(() => _currentIndex = index),
                 ),
@@ -721,6 +779,27 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
                         : () => setState(() => _currentIndex--),
                     icon: const Icon(Icons.chevron_left),
                     label: const Text('Previous'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      final answerKey = question.answerKey(_currentIndex);
+                      setState(() {
+                        if (!_reviewQuestionKeys.remove(answerKey)) {
+                          _reviewQuestionKeys.add(answerKey);
+                        }
+                      });
+                    },
+                    icon: const Icon(Icons.flag),
+                    label: Text(
+                      _reviewQuestionKeys.contains(
+                            question.answerKey(_currentIndex),
+                          )
+                          ? 'Unmark'
+                          : 'Review',
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -759,7 +838,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildImageQuestion(_Question question) {
-    final answerKey = _currentIndex.toString();
+    final answerKey = question.answerKey(_currentIndex);
     return Column(
       children: [
         Expanded(
@@ -819,6 +898,29 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (question.imageUrl != null) ...[
+          SizedBox(
+            height: 180,
+            width: double.infinity,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: ColoredBox(
+                color: Colors.black,
+                child: Image.network(
+                  question.imageUrl!,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const _FeedPlaceholder(
+                        text: 'Question image unavailable',
+                        loading: false,
+                        onRetry: _noop,
+                      ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
         Text(
           question.title,
           style: Theme.of(
@@ -828,9 +930,9 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         const SizedBox(height: 18),
         Expanded(
           child: RadioGroup<String>(
-            groupValue: _answers[_currentIndex.toString()],
+            groupValue: _answers[question.answerKey(_currentIndex)],
             onChanged: (value) => setState(
-              () => _answers[_currentIndex.toString()] = value ?? '',
+              () => _answers[question.answerKey(_currentIndex)] = value ?? '',
             ),
             child: ListView.separated(
               itemCount: question.options.length,
@@ -838,8 +940,8 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
               itemBuilder: (context, index) {
                 final option = question.options[index];
                 return RadioListTile<String>(
-                  value: option,
-                  title: Text(option),
+                  value: question.optionCode(index),
+                  title: Text('${question.optionCode(index)}. $option'),
                   tileColor: const Color(0xFF0F172A),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(8),
@@ -1397,10 +1499,7 @@ class _StatusRow extends StatelessWidget {
 }
 
 class _WatermarkOverlay extends StatelessWidget {
-  const _WatermarkOverlay({
-    required this.studentName,
-    required this.studentId,
-  });
+  const _WatermarkOverlay({required this.studentName, required this.studentId});
 
   final String studentName;
   final String studentId;
@@ -1447,12 +1546,42 @@ class _Question {
       imageUrl = null,
       filename = null;
 
+  const _Question.mcq({
+    required this.id,
+    required this.title,
+    required this.options,
+    this.imageUrl,
+    this.filename,
+  });
+
   const _Question.image({
     required this.id,
     required this.imageUrl,
     required this.filename,
   }) : title = '',
        options = const [];
+
+  factory _Question.fromQuestionJson(
+    Map<String, dynamic> json, {
+    required String Function(int id) imageUrlForId,
+  }) {
+    final id = _readRequiredInt(json, 'id');
+    final hasImage =
+        _readString(json, 'image_url').isNotEmpty ||
+        _readString(json, 'question_image').isNotEmpty;
+    return _Question.mcq(
+      id: id,
+      title: _readString(json, 'question_text'),
+      imageUrl: hasImage ? imageUrlForId(id) : null,
+      filename: hasImage ? 'Question image' : null,
+      options: [
+        _readString(json, 'option_a'),
+        _readString(json, 'option_b'),
+        _readString(json, 'option_c'),
+        _readString(json, 'option_d'),
+      ],
+    );
+  }
 
   factory _Question.fromImageJson(
     Map<String, dynamic> json, {
@@ -1473,6 +1602,16 @@ class _Question {
   final String? filename;
 
   bool get isImage => imageUrl != null;
+  bool get isImageOnly => isImage && title.trim().isEmpty && options.isEmpty;
+
+  String answerKey(int index) => id?.toString() ?? 'question_${index + 1}';
+
+  String optionCode(int index) =>
+      String.fromCharCode('A'.codeUnitAt(0) + index);
+
+  static String _readString(Map<String, dynamic> json, String key) {
+    return json[key]?.toString().trim() ?? '';
+  }
 
   static int _readRequiredInt(Map<String, dynamic> json, String key) {
     final value = json[key];
@@ -1482,7 +1621,7 @@ class _Question {
       final parsed = int.tryParse(value);
       if (parsed != null) return parsed;
     }
-    throw FormatException('Question image "$key" must be an integer.');
+    throw FormatException('Question "$key" must be an integer.');
   }
 }
 

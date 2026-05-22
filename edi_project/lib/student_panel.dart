@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -14,6 +16,7 @@ class StudentPanel extends StatefulWidget {
 
 class _StudentPanelState extends State<StudentPanel> {
   final _sideCameraController = TextEditingController();
+  Timer? _examRefreshTimer;
   bool _prefilledSideCamera = false;
   bool _loadingExams = true;
   List<Map<String, dynamic>> _exams = [];
@@ -25,21 +28,28 @@ class _StudentPanelState extends State<StudentPanel> {
       _sideCameraController.text = context.read<AppState>().sideCameraUrl;
       _prefilledSideCamera = true;
       _loadExams();
+      _examRefreshTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _loadExams(showLoading: false),
+      );
     }
   }
 
-  Future<void> _loadExams() async {
+  Future<void> _loadExams({bool showLoading = true}) async {
     final app = context.read<AppState>();
     if (!app.isProfileComplete) {
       setState(() => _loadingExams = false);
       return;
     }
-    setState(() => _loadingExams = true);
+    if (showLoading) setState(() => _loadingExams = true);
     try {
       final rows = await app.api.getAvailableExams();
+      debugPrint('[Student] fetched ${rows.length} active exams');
       if (!mounted) return;
       setState(() {
-        _exams = rows.map((item) => Map<String, dynamic>.from(item as Map)).toList();
+        _exams = rows
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
       });
     } catch (error) {
       if (mounted) {
@@ -54,6 +64,7 @@ class _StudentPanelState extends State<StudentPanel> {
 
   @override
   void dispose() {
+    _examRefreshTimer?.cancel();
     _sideCameraController.dispose();
     super.dispose();
   }
@@ -68,7 +79,11 @@ class _StudentPanelState extends State<StudentPanel> {
           const Padding(
             padding: EdgeInsets.only(right: 8),
             child: Center(
-              child: StatusBadge(label: 'Ready', color: AiColors.green, pulse: true),
+              child: StatusBadge(
+                label: 'Ready',
+                color: AiColors.green,
+                pulse: true,
+              ),
             ),
           ),
           Center(
@@ -103,7 +118,8 @@ class _StudentPanelState extends State<StudentPanel> {
                 if (!app.isProfileComplete) ...[
                   const SizedBox(height: 12),
                   _ProfileRequiredPanel(
-                    onComplete: () => Navigator.pushReplacementNamed(context, '/profile'),
+                    onComplete: () =>
+                        Navigator.pushReplacementNamed(context, '/profile'),
                   ),
                 ],
                 const SizedBox(height: 16),
@@ -183,8 +199,16 @@ class _ProfileRequiredPanel extends StatelessWidget {
         children: [
           const Icon(Icons.badge, color: Colors.orangeAccent),
           const SizedBox(width: 12),
-          const Expanded(child: Text('Complete your PRN, branch, division, semester, and year before joining exams.')),
-          GradientButton(onPressed: onComplete, icon: Icons.edit, label: 'Complete'),
+          const Expanded(
+            child: Text(
+              'Complete your PRN, branch, division, semester, and year before joining exams.',
+            ),
+          ),
+          GradientButton(
+            onPressed: onComplete,
+            icon: Icons.edit,
+            label: 'Complete',
+          ),
         ],
       ),
     );
@@ -199,7 +223,10 @@ class _EmptyExamState extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(34),
       child: const Center(
-        child: Text('No published exams are available for your profile yet.', style: TextStyle(color: Colors.white60)),
+        child: Text(
+          'No active exams available',
+          style: TextStyle(color: Colors.white60),
+        ),
       ),
     );
   }
@@ -222,11 +249,17 @@ class _CandidateHero extends StatelessWidget {
           final intro = Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const StatusBadge(label: 'Identity verified', color: AiColors.cyan, icon: Icons.verified_user),
+              const StatusBadge(
+                label: 'Identity verified',
+                color: AiColors.cyan,
+                icon: Icons.verified_user,
+              ),
               const SizedBox(height: 12),
               Text(
                 'Welcome, $name',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w900),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w900,
+                ),
               ),
               const SizedBox(height: 6),
               const Text(
@@ -272,8 +305,17 @@ class _CandidateHero extends StatelessWidget {
             ],
           );
           return narrow
-              ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [intro, const SizedBox(height: 14), metrics])
-              : Row(children: [Expanded(child: intro), const SizedBox(width: 18), metrics]);
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [intro, const SizedBox(height: 14), metrics],
+                )
+              : Row(
+                  children: [
+                    Expanded(child: intro),
+                    const SizedBox(width: 18),
+                    metrics,
+                  ],
+                );
         },
       ),
     );
@@ -290,13 +332,30 @@ class _CandidateSidePanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Readiness Matrix', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900)),
+          Text(
+            'Readiness Matrix',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+          ),
           const SizedBox(height: 12),
-          const StatusBadge(label: 'Side camera required', color: AiColors.amber, icon: Icons.settings_input_antenna),
+          const StatusBadge(
+            label: 'Side camera required',
+            color: AiColors.amber,
+            icon: Icons.settings_input_antenna,
+          ),
           const SizedBox(height: 10),
-          const StatusBadge(label: 'Fullscreen recommended', color: AiColors.cyan, icon: Icons.fullscreen),
+          const StatusBadge(
+            label: 'Fullscreen recommended',
+            color: AiColors.cyan,
+            icon: Icons.fullscreen,
+          ),
           const SizedBox(height: 10),
-          const StatusBadge(label: 'Tab switch logged', color: AiColors.red, icon: Icons.warning_amber),
+          const StatusBadge(
+            label: 'Tab switch logged',
+            color: AiColors.red,
+            icon: Icons.warning_amber,
+          ),
           const SizedBox(height: 18),
           const SizedBox(
             height: 130,
@@ -343,7 +402,9 @@ class _ExamCardState extends State<_ExamCard> {
               width: 54,
               height: 54,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [AiColors.cyan, AiColors.blue]),
+                gradient: const LinearGradient(
+                  colors: [AiColors.cyan, AiColors.blue],
+                ),
                 borderRadius: BorderRadius.circular(18),
               ),
               child: Center(
@@ -377,8 +438,16 @@ class _ExamCardState extends State<_ExamCard> {
                     spacing: 8,
                     runSpacing: 8,
                     children: const [
-                      StatusBadge(label: 'Published', color: AiColors.green, icon: Icons.check_circle),
-                      StatusBadge(label: 'AI monitored', color: AiColors.cyan, icon: Icons.radar),
+                      StatusBadge(
+                        label: 'Published',
+                        color: AiColors.green,
+                        icon: Icons.check_circle,
+                      ),
+                      StatusBadge(
+                        label: 'AI monitored',
+                        color: AiColors.cyan,
+                        icon: Icons.radar,
+                      ),
                     ],
                   ),
                   if (_validating) ...[

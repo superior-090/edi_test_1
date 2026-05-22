@@ -10,9 +10,33 @@ from jose import JWTError
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
-from ..models import Event, Exam, ExamQuestionImage, QuestionImage, Result, Session as SessionModel, StudentProfile, Subject, User
+from ..models import (
+    Answer,
+    Event,
+    Exam,
+    ExamAttempt,
+    ExamQuestionImage,
+    ProctorLog,
+    Question,
+    QuestionImage,
+    Result,
+    Session as SessionModel,
+    StudentProfile,
+    Subject,
+    User,
+)
 from ..role_filter import admin_session_payload, is_staff_role, student_session_payload
-from ..schemas import ClientEventRequest, EventOut, QuestionImageOut, SessionStartRequest, SubmitExamRequest
+from ..schemas import (
+    AttemptResultAnswerOut,
+    AutosaveAnswersRequest,
+    ClientEventRequest,
+    EventOut,
+    QuestionImageOut,
+    SessionStartRequest,
+    StudentQuestionOut,
+    StudentResultOut,
+    SubmitExamRequest,
+)
 from ..security import decode_token_without_db, get_db, get_current_user, require_role
 from ..services.ai_service import ai_service
 from ..services.side_camera import get_latest_side_camera_frame, validate_side_camera_url
@@ -43,6 +67,14 @@ def _serialize_session(session: SessionModel, message_type: str = "session") -> 
     return admin_session_payload(session, message_type)
 
 
+def _attempt_for_session(db: Session, session_id: str) -> ExamAttempt | None:
+    return db.query(ExamAttempt).filter(ExamAttempt.session_id == session_id).first()
+
+
+def _attempt_student(db: Session, session: SessionModel) -> User | None:
+    return db.query(User).filter(User.username == session.student_id).first()
+
+
 def _authorize_session_access(session: SessionModel, user: User) -> None:
     if not is_staff_role(user.role) and session.student_id != user.username:
         raise HTTPException(status_code=403, detail="Candidate cannot access another student's session")
@@ -68,6 +100,14 @@ def _record_event(
         metadata_json=json.dumps(metadata or {}),
     )
     db.add(event)
+    student = _attempt_student(db, session)
+    db.add(ProctorLog(
+        exam_id=session.exam_id,
+        student_id=student.id if student else None,
+        event_type=event_type,
+        event_details=message,
+        ai_score=session.cheat_score + score_delta,
+    ))
 
     if event_type == "TAB_SWITCH":
         session.tab_switch_count += 1
@@ -82,10 +122,62 @@ def _record_event(
         session.status = "AUTO_SUBMIT_REQUIRED" if session.cheat_score >= 95 else session.risk_level
     session.cheat_message = message
     session.is_cheating = session.risk_level in ("HIGH", "CRITICAL")
+    attempt = _attempt_for_session(db, session.session_id)
+    if attempt is not None:
+        if event_type == "TAB_SWITCH":
+            attempt.tab_switch_count += 1
+        if severity in ("MEDIUM", "HIGH", "CRITICAL"):
+            attempt.suspicious_events += 1
+        attempt.ai_risk_level = session.risk_level
     db.commit()
     db.refresh(event)
     db.refresh(session)
     return event
+
+
+def _question_image_url(question: Question) -> str:
+    return f"/session/questions/{question.id}/image" if question.question_image else ""
+
+
+def _student_result(db: Session, attempt: ExamAttempt) -> dict:
+    exam = db.query(Exam).filter(Exam.id == attempt.exam_id).first()
+    questions = {
+        question.id: question
+        for question in db.query(Question).filter(Question.exam_id == attempt.exam_id).all()
+    }
+    answer_rows = (
+        db.query(Answer)
+        .filter(Answer.attempt_id == attempt.id)
+        .order_by(Answer.question_id.asc())
+        .all()
+    )
+    total_marks = sum(question.marks for question in questions.values())
+    answer_payloads = []
+    for answer in answer_rows:
+        question = questions.get(answer.question_id)
+        if question is None:
+            continue
+        answer_payloads.append(AttemptResultAnswerOut(
+            question_id=question.id,
+            question_text=question.question_text,
+            selected_option=answer.selected_option,
+            correct_option=question.correct_option,
+            is_correct=answer.is_correct,
+            marks_awarded=answer.marks_awarded,
+            marks=question.marks,
+            explanation=question.explanation,
+        ))
+    percentage = (attempt.score / total_marks * 100) if total_marks else 0.0
+    return StudentResultOut(
+        attempt_id=attempt.id,
+        exam_id=attempt.exam_id,
+        exam_title=exam.title if exam else "Exam",
+        score=attempt.score,
+        total_marks=total_marks,
+        percentage=round(percentage, 2),
+        submitted_at=attempt.submitted_at,
+        answers=answer_payloads,
+    ).model_dump(mode="json")
 
 
 @router.post("/start")
@@ -104,6 +196,11 @@ async def start_session(
             raise HTTPException(status_code=404, detail="Exam not found")
         if not is_staff_role(user.role) and not exam.is_published:
             raise HTTPException(status_code=403, detail="Exam is not published")
+        now = datetime.now(timezone.utc)
+        if not is_staff_role(user.role) and exam.start_time and exam.start_time > now:
+            raise HTTPException(status_code=409, detail="Exam has not started yet")
+        if not is_staff_role(user.role) and exam.end_time and exam.end_time < now:
+            raise HTTPException(status_code=409, detail="Exam window has ended")
         subject = db.query(Subject).filter(Subject.id == exam.subject_id).first()
         payload.exam_title = exam.title
         if subject is not None:
@@ -175,6 +272,32 @@ async def start_session(
 
     db.commit()
     db.refresh(session)
+    attempt = None
+    if exam is not None:
+        attempt = (
+            db.query(ExamAttempt)
+            .filter(
+                ExamAttempt.exam_id == exam.id,
+                ExamAttempt.student_id == user.id,
+                ExamAttempt.status == "IN_PROGRESS",
+            )
+            .order_by(ExamAttempt.started_at.desc())
+            .first()
+        )
+        if attempt is None:
+            attempt = ExamAttempt(
+                exam_id=exam.id,
+                student_id=user.id,
+                session_id=session.session_id,
+                side_camera_ok=True,
+                ai_risk_level=session.risk_level,
+            )
+            db.add(attempt)
+        else:
+            attempt.session_id = session.session_id
+            attempt.side_camera_ok = True
+        db.commit()
+        db.refresh(attempt)
 
     cv2 = _cv2()
     encoded_ok, side_buffer = cv2.imencode(
@@ -194,7 +317,10 @@ async def start_session(
     )
 
     await manager.broadcast_admin(_serialize_session(session, "session_started"))
-    return admin_session_payload(session, "session_started") if is_staff_role(user.role) else student_session_payload(session, "session_started")
+    payload_out = admin_session_payload(session, "session_started") if is_staff_role(user.role) else student_session_payload(session, "session_started")
+    if attempt is not None:
+        payload_out["attempt_id"] = attempt.id
+    return payload_out
 
 
 @router.get("/{session_id}/status")
@@ -280,6 +406,62 @@ def _student_side_frame(session_id: str, db: Session) -> bytes | None:
                 store_side_frame(session_id, encoded)
                 return encoded
     return None
+
+
+@router.get("/questions", response_model=list[StudentQuestionOut])
+def exam_questions(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if exam is None:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    if not is_staff_role(user.role) and not exam.is_published:
+        raise HTTPException(status_code=403, detail="Exam is not published")
+    rows = (
+        db.query(Question)
+        .filter(Question.exam_id == exam.id)
+        .order_by(Question.sort_order.asc(), Question.id.asc())
+        .all()
+    )
+    return [
+        StudentQuestionOut(
+            id=question.id,
+            exam_id=question.exam_id,
+            question_text=question.question_text,
+            image_url=_question_image_url(question),
+            option_a=question.option_a,
+            option_b=question.option_b,
+            option_c=question.option_c,
+            option_d=question.option_d,
+            marks=question.marks,
+            sort_order=question.sort_order,
+        )
+        for question in rows
+    ]
+
+
+@router.get("/questions/{question_id}/image")
+def exam_question_image(
+    question_id: int,
+    token: str,
+    db: Session = Depends(get_db),
+):
+    _media_user(token, db)
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if question is None or not question.question_image:
+        raise HTTPException(status_code=404, detail="Question image not found")
+    image_path = QUESTION_IMAGE_DIR / question.question_image
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Question image file is missing")
+    return FileResponse(
+        image_path,
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/question-images", response_model=list[QuestionImageOut])
@@ -443,6 +625,26 @@ async def client_event(
     return admin_message["latest_event"] if is_staff_role(user.role) else {"status": "recorded"}
 
 
+@router.put("/{session_id}/autosave")
+def autosave_answers(
+    session_id: str,
+    payload: AutosaveAnswersRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _authorize_session_access(session, user)
+    attempt = _attempt_for_session(db, session_id)
+    if attempt is None or attempt.submitted_at is not None:
+        raise HTTPException(status_code=409, detail="Active exam attempt not found")
+    attempt.autosave_json = json.dumps(payload.answers)
+    session.answers_json = attempt.autosave_json
+    db.commit()
+    return {"status": "saved", "attempt_id": attempt.id, "saved_answers": len(payload.answers)}
+
+
 @router.post("/{session_id}/submit")
 async def submit_exam(
     session_id: str,
@@ -463,9 +665,51 @@ async def submit_exam(
     session.status = "SUBMITTED"
     session.submitted_at = datetime.now(timezone.utc)
     _record_event(db, session, "EXAM_SUBMITTED", f"Exam submitted: {payload.reason}", "INFO")
+    attempt = _attempt_for_session(db, session.session_id)
     if session.exam_id is not None:
         student = db.query(User).filter(User.username == session.student_id).first()
         if student is not None:
+            if attempt is None:
+                attempt = ExamAttempt(
+                    exam_id=session.exam_id,
+                    student_id=student.id,
+                    session_id=session.session_id,
+                    side_camera_ok=session.side_camera_status == "ONLINE",
+                )
+                db.add(attempt)
+                db.flush()
+            questions = (
+                db.query(Question)
+                .filter(Question.exam_id == session.exam_id)
+                .order_by(Question.sort_order.asc(), Question.id.asc())
+                .all()
+            )
+            score = 0.0
+            for question in questions:
+                selected = str(payload.answers.get(str(question.id), "")).strip().upper()
+                if selected not in {"A", "B", "C", "D"}:
+                    selected = ""
+                answer = (
+                    db.query(Answer)
+                    .filter(Answer.attempt_id == attempt.id, Answer.question_id == question.id)
+                    .first()
+                )
+                if answer is None:
+                    answer = Answer(attempt_id=attempt.id, question_id=question.id)
+                    db.add(answer)
+                answer.selected_option = selected
+                answer.is_correct = bool(selected and selected == question.correct_option.upper())
+                answer.marks_awarded = question.marks if answer.is_correct else 0.0
+                score += answer.marks_awarded
+            attempt.autosave_json = session.answers_json
+            attempt.submitted_at = session.submitted_at
+            attempt.auto_submitted = payload.reason != "submitted_by_candidate"
+            attempt.score = score
+            attempt.status = "SUBMITTED"
+            attempt.tab_switch_count = session.tab_switch_count
+            attempt.ai_risk_level = session.risk_level
+            attempt.front_camera_ok = True
+            attempt.side_camera_ok = session.side_camera_status == "ONLINE"
             existing = (
                 db.query(Result)
                 .filter(Result.student_id == student.id, Result.exam_id == session.exam_id)
@@ -473,7 +717,7 @@ async def submit_exam(
             )
             violation_count = db.query(Event).filter(Event.session_id == session.session_id).count()
             result = existing or Result(student_id=student.id, exam_id=session.exam_id)
-            result.score = existing.score if existing else 0.0
+            result.score = score
             result.submitted_at = session.submitted_at
             result.ai_suspicion_score = session.cheat_score
             result.violation_count = violation_count
@@ -483,7 +727,26 @@ async def submit_exam(
 
     await manager.broadcast_admin(_serialize_session(session, "exam_submitted"))
     await manager.broadcast_session(session.session_id, student_session_payload(session, "exam_submitted"))
-    return admin_session_payload(session, "exam_submitted") if is_staff_role(user.role) else student_session_payload(session, "exam_submitted")
+    response = admin_session_payload(session, "exam_submitted") if is_staff_role(user.role) else student_session_payload(session, "exam_submitted")
+    if attempt is not None and not is_staff_role(user.role):
+        response["result"] = _student_result(db, attempt)
+    return response
+
+
+@router.get("/{session_id}/result")
+def attempt_result(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _authorize_session_access(session, user)
+    attempt = _attempt_for_session(db, session_id)
+    if attempt is None or attempt.submitted_at is None:
+        raise HTTPException(status_code=409, detail="Result is not ready")
+    return _student_result(db, attempt)
 
 
 @router.post("/end")
