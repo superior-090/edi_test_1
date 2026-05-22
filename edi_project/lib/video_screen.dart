@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'app_state.dart';
+import 'design_system.dart';
 
 class VideoScreen extends StatefulWidget {
   const VideoScreen({super.key, required this.sessionId});
@@ -49,6 +50,12 @@ class _VideoScreenState extends State<VideoScreen> {
       appBar: AppBar(
         title: Text(session['student_name']?.toString() ?? widget.sessionId),
         actions: [
+          const Padding(
+            padding: EdgeInsets.only(right: 8),
+            child: Center(
+              child: StatusBadge(label: 'Live session', color: AiColors.cyan, pulse: true),
+            ),
+          ),
           IconButton(
             tooltip: 'Refresh details',
             onPressed: _load,
@@ -56,69 +63,60 @@ class _VideoScreenState extends State<VideoScreen> {
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final wide = constraints.maxWidth >= 1000;
-                return Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _SessionSummary(session: session),
-                      const SizedBox(height: 12),
-                      Expanded(
-                        flex: 3,
-                        child: wide
-                            ? Row(
-                                children: [
-                                  Expanded(
-                                    child: _FeedPane(
-                                      title: 'Front camera',
-                                      sessionId: widget.sessionId,
-                                      side: false,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: _FeedPane(
-                                      title: 'Side camera',
-                                      sessionId: widget.sessionId,
-                                      side: true,
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : ListView(
-                                children: [
-                                  SizedBox(
-                                    height: 280,
-                                    child: _FeedPane(
-                                      title: 'Front camera',
-                                      sessionId: widget.sessionId,
-                                      side: false,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  SizedBox(
-                                    height: 280,
-                                    child: _FeedPane(
-                                      title: 'Side camera',
-                                      sessionId: widget.sessionId,
-                                      side: true,
-                                    ),
-                                  ),
-                                ],
+      body: AiGradientBackground(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth >= 1080;
+                  final feeds = wide
+                      ? Row(
+                          children: [
+                            Expanded(child: _FeedPane(title: 'Front camera', sessionId: widget.sessionId, side: false)),
+                            const SizedBox(width: 12),
+                            Expanded(child: _FeedPane(title: 'Side camera', sessionId: widget.sessionId, side: true)),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            SizedBox(height: 320, child: _FeedPane(title: 'Front camera', sessionId: widget.sessionId, side: false)),
+                            const SizedBox(height: 12),
+                            SizedBox(height: 320, child: _FeedPane(title: 'Side camera', sessionId: widget.sessionId, side: true)),
+                          ],
+                        );
+                  return Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: wide
+                        ? Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: Column(
+                                  children: [
+                                    _SessionSummary(session: session),
+                                    const SizedBox(height: 12),
+                                    Expanded(child: feeds),
+                                  ],
+                                ),
                               ),
-                      ),
-                      const SizedBox(height: 12),
-                      Expanded(child: _MalpracticeLog(events: events)),
-                    ],
-                  ),
-                );
-              },
-            ),
+                              const SizedBox(width: 12),
+                              SizedBox(width: 360, child: _MalpracticeLog(events: events)),
+                            ],
+                          )
+                        : ListView(
+                            children: [
+                              _SessionSummary(session: session),
+                              const SizedBox(height: 12),
+                              feeds,
+                              const SizedBox(height: 12),
+                              SizedBox(height: 360, child: _MalpracticeLog(events: events)),
+                            ],
+                          ),
+                  );
+                },
+              ),
+      ),
     );
   }
 }
@@ -136,14 +134,21 @@ class _FeedPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      borderColor: (side ? AiColors.purple : AiColors.cyan).withValues(alpha: 0.25),
       child: Column(
         children: [
-          ListTile(
-            dense: true,
-            leading: const Icon(Icons.videocam),
-            title: Text(title),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Icon(Icons.videocam, color: side ? AiColors.purple : AiColors.cyan),
+                const SizedBox(width: 8),
+                Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.w900))),
+                StatusBadge(label: 'Streaming', color: side ? AiColors.purple : AiColors.cyan, pulse: true),
+              ],
+            ),
           ),
           Expanded(
             child: InteractiveViewer(
@@ -246,31 +251,23 @@ class _SessionSummary extends StatelessWidget {
       spacing: 10,
       runSpacing: 10,
       children: [
-        _Pill(label: 'Exam', value: '${session['exam_title'] ?? '-'}'),
-        _Pill(label: 'Subject', value: '${session['subject'] ?? '-'}'),
-        _Pill(label: 'Status', value: '${session['status'] ?? '-'}'),
-        _Pill(label: 'Cheat type', value: '${session['cheat_type'] ?? '-'}'),
-        _Pill(label: 'Score', value: '${session['cheat_score'] ?? 0}'),
-        _Pill(
-          label: 'Side cam',
-          value: '${session['side_camera_status'] ?? 'UNKNOWN'}',
+        SizedBox(
+          width: 240,
+          child: MetricTile(icon: Icons.assignment, label: 'Exam', value: '${session['exam_title'] ?? '-'}', color: AiColors.cyan),
+        ),
+        SizedBox(
+          width: 170,
+          child: MetricTile(icon: Icons.menu_book, label: 'Subject', value: '${session['subject'] ?? '-'}', color: AiColors.purple),
+        ),
+        SizedBox(
+          width: 180,
+          child: MetricTile(icon: Icons.radar, label: 'Status', value: '${session['status'] ?? '-'}', color: AiColors.green),
+        ),
+        SizedBox(
+          width: 170,
+          child: MetricTile(icon: Icons.warning_amber, label: 'Risk score', value: '${session['cheat_score'] ?? 0}', color: AiColors.red),
         ),
       ],
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      label: Text('$label: $value'),
-      avatar: const Icon(Icons.info_outline, size: 16),
     );
   }
 }
@@ -282,25 +279,67 @@ class _MalpracticeLog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: events.isEmpty
-          ? const Center(child: Text('No malpractice events recorded yet'))
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      borderColor: AiColors.red.withValues(alpha: 0.22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                const Icon(Icons.timeline, color: AiColors.red),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Suspicious Activity Timeline',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
+                  ),
+                ),
+                StatusBadge(label: '${events.length}', color: events.isEmpty ? AiColors.green : AiColors.red),
+              ],
+            ),
+          ),
+          Expanded(
+            child: events.isEmpty
+          ? const Center(child: Text('No malpractice events recorded yet', style: TextStyle(color: Colors.white60)))
           : ListView.separated(
               padding: const EdgeInsets.all(12),
               itemCount: events.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
+              separatorBuilder: (context, index) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 final event = events[index];
-                return ListTile(
-                  leading: const Icon(Icons.warning_amber),
-                  title: Text(event['message']?.toString() ?? 'Event'),
-                  subtitle: Text(
-                    '${event['event_type'] ?? ''} - ${event['severity'] ?? ''}',
+                return Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AiColors.red.withValues(alpha: 0.08),
+                    border: Border.all(color: AiColors.red.withValues(alpha: 0.24)),
+                    borderRadius: BorderRadius.circular(16),
                   ),
-                  trailing: Text('${event['score_delta'] ?? 0}'),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber, color: AiColors.red),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(event['message']?.toString() ?? 'Event', style: const TextStyle(fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 3),
+                            Text('${event['event_type'] ?? ''} - ${event['severity'] ?? ''}', style: const TextStyle(color: Colors.white60)),
+                          ],
+                        ),
+                      ),
+                      Text('${event['score_delta'] ?? 0}', style: const TextStyle(color: AiColors.red, fontWeight: FontWeight.w900)),
+                    ],
+                  ),
                 );
               },
             ),
+          ),
+        ],
+      ),
     );
   }
 }

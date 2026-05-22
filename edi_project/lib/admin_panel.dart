@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'app_state.dart';
+import 'design_system.dart';
 import 'video_screen.dart';
 
 class AdminPanel extends StatefulWidget {
@@ -256,7 +257,8 @@ class _AdminPanelState extends State<AdminPanel> {
           ),
         ],
       ),
-      body: _loading
+      body: AiGradientBackground(
+        child: _loading
           ? const Center(child: CircularProgressIndicator())
           : LayoutBuilder(
               builder: (context, constraints) {
@@ -317,6 +319,7 @@ class _AdminPanelState extends State<AdminPanel> {
                 );
               },
             ),
+      ),
       bottomSheet: MediaQuery.of(context).size.width < 1100
           ? SizedBox(height: 190, child: _EventLog(events: _events))
           : null,

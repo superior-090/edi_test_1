@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'app_state.dart';
+import 'design_system.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -76,36 +77,30 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Complete Student Profile')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: ListView(
-            padding: const EdgeInsets.all(20),
-            children: [
-              Container(
-                padding: const EdgeInsets.all(18),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0F172A),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.22)),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.badge, color: Colors.cyanAccent),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        'Profile details are required before joining any exam.',
-                        style: TextStyle(fontWeight: FontWeight.w800),
+      body: AiGradientBackground(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: ListView(
+              padding: const EdgeInsets.all(20),
+              children: [
+                const GlassCard(
+                  padding: EdgeInsets.all(18),
+                  child: Row(
+                    children: [
+                      Icon(Icons.badge, color: AiColors.cyan),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Profile details are required before joining any exam.',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(18),
+                const SizedBox(height: 16),
+                GlassCard(
                   child: Form(
                     key: _formKey,
                     child: Column(
@@ -129,24 +124,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         const SizedBox(height: 10),
                         Align(
                           alignment: Alignment.centerRight,
-                          child: FilledButton.icon(
+                          child: GradientButton(
                             onPressed: _saving ? null : _submit,
-                            icon: _saving
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.save),
-                            label: Text(_saving ? 'Saving' : 'Save profile'),
+                            icon: Icons.save,
+                            label: _saving ? 'Saving' : 'Save profile',
+                            loading: _saving,
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'app_state.dart';
+import 'design_system.dart';
 import 'exam_copy_guard.dart';
 
 void _noop() {}
@@ -591,46 +592,48 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
             const SizedBox(width: 12),
           ],
         ),
-        body: LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 980;
-            final content = Padding(
-              padding: const EdgeInsets.all(18),
-              child: wide
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(flex: 3, child: _buildQuestionPanel(question)),
-                        const SizedBox(width: 16),
-                        SizedBox(
-                          width: 340,
-                          child: SingleChildScrollView(
-                            child: _buildMonitorPanel(),
+        body: AiGradientBackground(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 980;
+              final content = Padding(
+                padding: const EdgeInsets.all(18),
+                child: wide
+                    ? Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(flex: 3, child: _buildQuestionPanel(question)),
+                          const SizedBox(width: 16),
+                          SizedBox(
+                            width: 340,
+                            child: SingleChildScrollView(
+                              child: _buildMonitorPanel(),
+                            ),
                           ),
-                        ),
-                      ],
-                    )
-                  : ListView(
-                      children: [
-                        SizedBox(
-                          height: (constraints.maxHeight * 0.58).clamp(
-                            420.0,
-                            620.0,
+                        ],
+                      )
+                    : ListView(
+                        children: [
+                          SizedBox(
+                            height: (constraints.maxHeight * 0.58).clamp(
+                              420.0,
+                              620.0,
+                            ),
+                            child: _buildQuestionPanel(question),
                           ),
-                          child: _buildQuestionPanel(question),
-                        ),
-                        const SizedBox(height: 16),
-                        _buildMonitorPanel(),
-                      ],
-                    ),
-            );
-            return Stack(
-              children: [
-                content,
-                if (_sideCameraNeedsReconnect) _buildSideCameraOverlay(),
-              ],
-            );
-          },
+                          const SizedBox(height: 16),
+                          _buildMonitorPanel(),
+                        ],
+                      ),
+              );
+              return Stack(
+                children: [
+                  content,
+                  if (_sideCameraNeedsReconnect) _buildSideCameraOverlay(),
+                ],
+              );
+            },
+          ),
         ),
         ),
       ),
@@ -661,7 +664,8 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildQuestionPanel(_Question question) {
-    return Card(
+    return GlassCard(
+      borderColor: AiColors.cyan.withValues(alpha: 0.2),
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'api_service.dart';
 import 'app_state.dart';
+import 'design_system.dart';
 import 'download_helper.dart';
 import 'question_image_picker.dart';
 
@@ -476,27 +477,29 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           ),
         ],
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final wide = constraints.maxWidth >= 980;
-          final content = _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _buildContent();
-          if (!wide) {
-            return Column(
+      body: AiGradientBackground(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= 980;
+            final content = _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _buildContent();
+            if (!wide) {
+              return Column(
+                children: [
+                  _TopNav(selected: _tab, onSelected: _selectTab),
+                  Expanded(child: content),
+                ],
+              );
+            }
+            return Row(
               children: [
-                _TopNav(selected: _tab, onSelected: _selectTab),
+                _Sidebar(selected: _tab, onSelected: _selectTab),
                 Expanded(child: content),
               ],
             );
-          }
-          return Row(
-            children: [
-              _Sidebar(selected: _tab, onSelected: _selectTab),
-              Expanded(child: content),
-            ],
-          );
-        },
+          },
+        ),
       ),
     );
   }
