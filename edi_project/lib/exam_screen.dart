@@ -102,9 +102,12 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   bool _submitted = false;
   bool _closingDialogVisible = false;
   bool _sideReconnectBusy = false;
+  bool _sessionStarted = false;
+  bool _startingSession = false;
   bool _disposed = false;
   DateTime? _lastDisconnectLogAt;
   String? _cameraError;
+  String? _sessionStartError;
   String _candidateStatus = 'MONITORING';
   String _sideCameraStatus = 'UNKNOWN';
 
@@ -177,8 +180,19 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _startExam() async {
+    if (_startingSession || _sessionStarted) return;
+    if (mounted) {
+      setState(() {
+        _startingSession = true;
+        _sessionStartError = null;
+      });
+    } else {
+      _startingSession = true;
+      _sessionStartError = null;
+    }
     final app = context.read<AppState>();
     try {
+      debugPrint('Starting backend exam session: $_sessionId');
       final session = await app.api.startSession(
         sessionId: _sessionId,
         examId: widget.examId,
@@ -186,8 +200,14 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         studentName: widget.studentName,
         examTitle: widget.examTitle,
         subject: widget.subject,
-        sideCameraUrl: widget.sideCameraUrl,
+        sideCameraUrl: _sideCameraUrl,
       );
+      if (!mounted) return;
+      setState(() {
+        _sessionStarted = true;
+        _startingSession = false;
+        _sessionStartError = null;
+      });
       _connectWebSocket();
       _handleRealtime(session);
       if (session['status'] == 'REJOIN_PENDING') {
@@ -197,10 +217,14 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         return;
       }
       await _activateMonitoring();
-    } catch (error) {
+    } catch (error, stackTrace) {
+      debugPrint('Start exam session failed: $error\n$stackTrace');
       if (mounted) {
         setState(() {
           _connected = false;
+          _sessionStarted = false;
+          _startingSession = false;
+          _sessionStartError = error.toString();
         });
       }
     }
@@ -483,6 +507,21 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
       final confirmed = await _confirmSubmit();
       if (confirmed != true || !mounted) return;
     }
+    final sessionReady = await _ensureSessionStarted();
+    if (!sessionReady) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _sessionStartError == null
+                  ? 'Starting exam session. Please try again.'
+                  : 'Cannot submit yet: $_sessionStartError',
+            ),
+          ),
+        );
+      }
+      return;
+    }
     _captureTimer?.cancel();
     _sideCheckTimer?.cancel();
     _clockTimer?.cancel();
@@ -528,6 +567,18 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     } finally {
       if (mounted && !_submitted) setState(() => _submitting = false);
     }
+  }
+
+  Future<bool> _ensureSessionStarted() async {
+    if (_sessionStarted) return true;
+    if (_startingSession) {
+      for (var i = 0; i < 40 && _startingSession && mounted; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      if (_sessionStarted) return true;
+    }
+    await _startExam();
+    return _sessionStarted;
   }
 
   Future<bool?> _confirmSubmit() {

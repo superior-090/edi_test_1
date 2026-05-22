@@ -38,7 +38,11 @@ from ..schemas import (
 )
 from ..security import decode_token_without_db, get_db, get_current_user, require_role
 from ..services.ai_service import ai_service
-from ..services.side_camera import get_latest_side_camera_frame, validate_side_camera_url
+from ..services.side_camera import (
+    get_latest_side_camera_frame,
+    normalize_side_camera_url,
+    validate_side_camera_url,
+)
 from ..state import manager, store_side_frame
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -205,10 +209,20 @@ async def start_session(
         if subject is not None:
             payload.subject = subject.subject_code
 
+    side_camera_frame = None
     try:
         side_camera_url, side_camera_frame = validate_side_camera_url(payload.side_camera_url)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        side_camera_url = normalize_side_camera_url(payload.side_camera_url)
+        if side_camera_url.lower().startswith("rtsp://"):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning(
+            "Browser-validated side camera accepted without initial backend frame; "
+            "session_id=%s url=%s error=%s",
+            payload.session_id,
+            side_camera_url,
+            exc,
+        )
 
     previous = (
         db.query(SessionModel)
@@ -286,22 +300,23 @@ async def start_session(
         db.commit()
         db.refresh(attempt)
 
-    cv2 = _cv2()
-    encoded_ok, side_buffer = cv2.imencode(
-        ".jpg",
-        side_camera_frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 80],
-    )
-    side_detection = ai_service.process_frame(
-        f"{session.session_id}:side",
-        side_camera_frame,
-        camera="side",
-    )
-    store_side_frame(
-        session.session_id,
-        side_buffer.tobytes() if encoded_ok else b"",
-        side_detection.annotated_jpeg,
-    )
+    if side_camera_frame is not None:
+        cv2 = _cv2()
+        encoded_ok, side_buffer = cv2.imencode(
+            ".jpg",
+            side_camera_frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+        )
+        side_detection = ai_service.process_frame(
+            f"{session.session_id}:side",
+            side_camera_frame,
+            camera="side",
+        )
+        store_side_frame(
+            session.session_id,
+            side_buffer.tobytes() if encoded_ok else b"",
+            side_detection.annotated_jpeg,
+        )
 
     await manager.broadcast_admin(_serialize_session(session, "session_started"))
     payload_out = admin_session_payload(session, "session_started") if is_staff_role(user.role) else student_session_payload(session, "session_started")
