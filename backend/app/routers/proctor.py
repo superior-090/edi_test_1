@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
@@ -13,12 +15,20 @@ from ..schemas import (
     SideCameraValidationResponse,
 )
 from ..security import get_db, get_current_user, require_role
-from ..services.ai_service import ai_service
+from ..services.ai_service import Detection, ai_service
 from ..services.side_camera import read_side_camera_frame, test_camera_connection_detailed
 from ..state import clear_side_frame, manager, store_frame, store_side_frame
 
 router = APIRouter(prefix="/proctor", tags=["proctor"])
+logger = logging.getLogger(__name__)
 side_camera_failures: dict[str, int] = {}
+
+
+async def _run_blocking(func, *args, timeout_seconds: float = 5.0):
+    return await asyncio.wait_for(
+        asyncio.to_thread(func, *args),
+        timeout=timeout_seconds,
+    )
 
 
 def _cv2():
@@ -200,21 +210,75 @@ async def upload_frame(
     if frame is None:
         raise HTTPException(status_code=400, detail="Invalid image")
 
+    store_frame(session_id, contents)
+    logger.info(
+        "Front frame received; session_id=%s bytes=%s",
+        session_id,
+        len(contents),
+    )
     cv2 = _cv2()
-    detection = ai_service.process_frame(session_id, frame, camera="front")
-    store_frame(session_id, contents, detection.annotated_jpeg)
+    try:
+        detection = await _run_blocking(
+            ai_service.process_frame,
+            session_id,
+            frame,
+            "front",
+            timeout_seconds=4.0,
+        )
+        store_frame(session_id, contents, detection.annotated_jpeg)
+        logger.info(
+            "Front AI detection complete; session_id=%s events=%s score_delta=%s",
+            session_id,
+            len(detection.events),
+            detection.score_delta,
+        )
+    except Exception:
+        logger.exception("Front AI detection failed or timed out; session_id=%s", session_id)
+        detection = Detection(
+            cheating=False,
+            message="Clear",
+            confidence=0.0,
+            score_delta=0.0,
+            events=[],
+        )
     side_events = []
     side_ok = False
     if session.side_camera_url:
-        side_ok, side_frame = read_side_camera_frame(session.side_camera_url)
+        try:
+            side_ok, side_frame = await _run_blocking(
+                read_side_camera_frame,
+                session.side_camera_url,
+                0.8,
+                timeout_seconds=1.0,
+            )
+        except Exception:
+            logger.exception("Side camera read failed or timed out; session_id=%s", session_id)
+            side_ok, side_frame = False, None
         if side_ok:
             side_camera_failures[session_id] = 0
             ok, side_buffer = cv2.imencode(".jpg", side_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            side_detection = ai_service.process_frame(f"{session_id}:side", side_frame, camera="side")
+            store_side_frame(session_id, side_buffer.tobytes() if ok else b"")
+            try:
+                side_detection = await _run_blocking(
+                    ai_service.process_frame,
+                    f"{session_id}:side",
+                    side_frame,
+                    "side",
+                    timeout_seconds=3.0,
+                )
+            except Exception:
+                logger.exception("Side AI detection failed or timed out; session_id=%s", session_id)
+                side_detection = Detection(
+                    cheating=False,
+                    message="Clear",
+                    confidence=0.0,
+                    score_delta=0.0,
+                    events=[],
+                )
             store_side_frame(
                 session_id,
                 side_buffer.tobytes() if ok else b"",
-                side_detection.annotated_jpeg,
+                getattr(side_detection, "annotated_jpeg", None),
             )
             side_events = [
                 {
@@ -229,59 +293,56 @@ async def upload_frame(
             failures = side_camera_failures.get(session_id, 0) + 1
             side_camera_failures[session_id] = failures
             if failures < 12:
-                session.side_camera_status = "RECONNECTING"
-                session.cheat_message = "Side camera reconnecting"
+                logger.warning(
+                    "Side camera read miss; session_id=%s failures=%s",
+                    session_id,
+                    failures,
+                )
+            else:
+                clear_side_frame(session_id)
+                session.side_camera_status = "OFFLINE"
+                session.is_active = False
+                session.is_terminated = True
+                session.status = "TERMINATED"
+                session.is_cheating = True
+                session.cheat_type = "SIDE_CAMERA_DISCONNECTED"
+                session.cheat_message = "Side camera feed stopped. Exam terminated."
+                session.warning_count += 1
+                session.cheat_score = min(100.0, session.cheat_score + 30)
+                session.risk_level = _risk(session.cheat_score)
+                db.add(Event(
+                    session_id=session_id,
+                    event_type="SIDE_CAMERA_DISCONNECTED",
+                    severity="CRITICAL",
+                    message="Side camera feed stopped during the exam",
+                    confidence=1.0,
+                    score_delta=30,
+                    metadata_json=json.dumps({"source": "side_camera"}),
+                ))
                 db.commit()
                 db.refresh(session)
-                payload = _session_payload(session, "side_camera_reconnecting")
-                await manager.broadcast_admin(payload)
-                await manager.broadcast_session(session_id, _student_response(session, "side_camera_reconnecting"))
-                return payload if is_staff_role(user.role) else _student_response(session, "side_camera_reconnecting")
-
-            clear_side_frame(session_id)
-            session.side_camera_status = "OFFLINE"
-            session.is_active = False
-            session.is_terminated = True
-            session.status = "TERMINATED"
-            session.is_cheating = True
-            session.cheat_type = "SIDE_CAMERA_DISCONNECTED"
-            session.cheat_message = "Side camera feed stopped. Exam terminated."
-            session.warning_count += 1
-            session.cheat_score = min(100.0, session.cheat_score + 30)
-            session.risk_level = _risk(session.cheat_score)
-            db.add(Event(
-                session_id=session_id,
-                event_type="SIDE_CAMERA_DISCONNECTED",
-                severity="CRITICAL",
-                message="Side camera feed stopped during the exam",
-                confidence=1.0,
-                score_delta=30,
-                metadata_json=json.dumps({"source": "side_camera"}),
-            ))
-            db.commit()
-            db.refresh(session)
-            await broadcast_monitoring_update(manager, session, "terminated")
-            admin_response = DetectionResponse(
-                session_id=session_id,
-                cheating=True,
-                message=session.cheat_message,
-                cheat_type=session.cheat_type,
-                confidence=1.0,
-                cheat_score=session.cheat_score,
-                risk_level=session.risk_level,
-                status=session.status,
-                warning_count=session.warning_count,
-                candidate_status=session.status,
-                side_camera_status=session.side_camera_status,
-                events=[{
-                    "event_type": "SIDE_CAMERA_DISCONNECTED",
-                    "severity": "CRITICAL",
-                    "message": "Side camera feed stopped during the exam",
-                    "confidence": 1.0,
-                    "score_delta": 30,
-                }],
-            ).model_dump(mode="json")
-            return admin_response if is_staff_role(user.role) else _student_response(session, "terminated")
+                await broadcast_monitoring_update(manager, session, "terminated")
+                admin_response = DetectionResponse(
+                    session_id=session_id,
+                    cheating=True,
+                    message=session.cheat_message,
+                    cheat_type=session.cheat_type,
+                    confidence=1.0,
+                    cheat_score=session.cheat_score,
+                    risk_level=session.risk_level,
+                    status=session.status,
+                    warning_count=session.warning_count,
+                    candidate_status=session.status,
+                    side_camera_status=session.side_camera_status,
+                    events=[{
+                        "event_type": "SIDE_CAMERA_DISCONNECTED",
+                        "severity": "CRITICAL",
+                        "message": "Side camera feed stopped during the exam",
+                        "confidence": 1.0,
+                        "score_delta": 30,
+                    }],
+                ).model_dump(mode="json")
+                return admin_response if is_staff_role(user.role) else _student_response(session, "terminated")
 
     all_events = detection.events + side_events
     chargeable_events = [event for event in all_events if event.get("chargeable", True) and event["score_delta"] > 0]

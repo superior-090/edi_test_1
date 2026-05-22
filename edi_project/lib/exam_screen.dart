@@ -407,7 +407,6 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   Future<void> _uploadFrontFrame() async {
     final controller = _cameraController;
     if (_uploading ||
-        _sideCameraNeedsReconnect ||
         controller == null ||
         !controller.value.isInitialized ||
         controller.value.isTakingPicture) {
@@ -424,6 +423,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         _sessionId,
         filename: image.name.isEmpty ? 'front-camera.jpg' : image.name,
       );
+      debugPrint('Front frame uploaded; session=$_sessionId');
       _handleRealtime(result);
       if (mounted) setState(() => _connected = true);
     } catch (error, stackTrace) {
