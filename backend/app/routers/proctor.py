@@ -14,7 +14,7 @@ from ..schemas import (
 )
 from ..security import get_db, get_current_user, require_role
 from ..services.ai_service import ai_service
-from ..services.side_camera import read_side_camera_frame, test_camera_connection
+from ..services.side_camera import read_side_camera_frame, test_camera_connection_detailed
 from ..state import clear_side_frame, manager, store_frame, store_side_frame
 
 router = APIRouter(prefix="/proctor", tags=["proctor"])
@@ -57,6 +57,21 @@ def _authorize_session_access(session: SessionModel, user: User) -> None:
         raise HTTPException(status_code=403, detail="Candidate cannot access another student's session")
 
 
+def _attempts_payload(validation) -> list[dict]:
+    return [
+        {
+            "url": attempt.url,
+            "stream_type": attempt.stream_type,
+            "http_status": attempt.http_status,
+            "latency_ms": attempt.latency_ms,
+            "success": attempt.success,
+            "live": attempt.live,
+            "error": attempt.error,
+        }
+        for attempt in validation.attempts
+    ]
+
+
 @router.post("/validate-side-camera", response_model=SideCameraValidationResponse)
 async def validate_side_camera(
     payload: SideCameraValidationRequest,
@@ -64,7 +79,7 @@ async def validate_side_camera(
 ):
     camera_input = (payload.camera_input or payload.side_camera_url or "").strip()
     try:
-        ok, resolved_url, stream_type, frame = test_camera_connection(
+        validation = test_camera_connection_detailed(
             camera_input,
             timeout_seconds=3.0,
         )
@@ -75,32 +90,54 @@ async def validate_side_camera(
             state="INVALID_IP",
         )
 
-    if not ok or frame is None or frame.size == 0:
+    attempted_url = validation.resolved_url or (validation.attempts[-1].url if validation.attempts else "")
+    attempted_urls = [attempt.url for attempt in validation.attempts]
+    attempts = _attempts_payload(validation)
+
+    if not validation.success or validation.frame is None or validation.frame.size == 0:
         return SideCameraValidationResponse(
             success=False,
-            message="Unable to connect to side camera",
+            message="Unable to connect to side camera with live updating frames",
             state="STREAM_FAILED",
+            attempted_url=attempted_url,
+            attempted_urls=attempted_urls,
+            http_status=validation.http_status,
+            latency_ms=validation.latency_ms,
+            live_frames_confirmed=False,
+            attempts=attempts,
         )
 
     cv2 = _cv2()
-    encoded_ok, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    encoded_ok, buffer = cv2.imencode(".jpg", validation.frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
     if not encoded_ok or not buffer.any():
         return SideCameraValidationResponse(
             success=False,
             message="Unable to read a valid side camera frame",
-            side_camera_url=resolved_url,
-            resolved_url=resolved_url,
-            stream_type=stream_type,
+            side_camera_url=validation.resolved_url,
+            resolved_url=validation.resolved_url,
+            stream_type=validation.stream_type,
             state="CAMERA_OFFLINE",
+            attempted_url=attempted_url,
+            attempted_urls=attempted_urls,
+            http_status=validation.http_status,
+            latency_ms=validation.latency_ms,
+            live_frames_confirmed=False,
+            attempts=attempts,
         )
 
     return SideCameraValidationResponse(
         success=True,
-        message="Camera connected",
-        side_camera_url=resolved_url,
-        resolved_url=resolved_url,
-        stream_type=stream_type,
+        message="Camera connected with live updating frames",
+        side_camera_url=validation.resolved_url,
+        resolved_url=validation.resolved_url,
+        stream_type=validation.stream_type,
         state="ONLINE",
+        attempted_url=validation.resolved_url,
+        attempted_urls=attempted_urls,
+        http_status=validation.http_status,
+        latency_ms=validation.latency_ms,
+        live_frames_confirmed=True,
+        attempts=attempts,
     )
 
 

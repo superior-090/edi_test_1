@@ -4,7 +4,9 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 _readers: dict[str, "IPCameraReader"] = {}
 _readers_lock = threading.Lock()
@@ -26,11 +28,38 @@ def detect_stream_type(camera_url: str) -> str:
     value = camera_url.strip().lower()
     if value.startswith("rtsp://"):
         return "RTSP"
+    if value.endswith("/shot.jpg"):
+        return "HTTP_JPEG_SNAPSHOT"
+    if value.endswith(("/video", "/videofeed")):
+        return "HTTP_MJPEG"
     if value.startswith("https://"):
         return "HTTPS"
     if value.startswith("http://"):
         return "HTTP"
     return "UNKNOWN"
+
+
+@dataclass
+class CameraAttempt:
+    url: str
+    stream_type: str
+    http_status: int | None = None
+    latency_ms: int | None = None
+    success: bool = False
+    live: bool = False
+    error: str = ""
+
+
+@dataclass
+class CameraConnectionResult:
+    success: bool
+    resolved_url: str = ""
+    stream_type: str = "UNKNOWN"
+    frame: object | None = None
+    http_status: int | None = None
+    latency_ms: int | None = None
+    live: bool = False
+    attempts: list[CameraAttempt] = field(default_factory=list)
 
 
 def _is_ip_like(value: str) -> bool:
@@ -48,7 +77,8 @@ def _candidate_urls(camera_input: str) -> list[str]:
         if not parsed.hostname:
             raise ValueError("Enter a valid camera URL or IP")
         if parsed.scheme in {"http", "https"} and parsed.path in ("", "/"):
-            return [value.rstrip("/") + "/video", value.rstrip("/")]
+            base = value.rstrip("/")
+            return [f"{base}/video", f"{base}/videofeed", f"{base}/shot.jpg", base]
         return [value]
 
     if not _is_ip_like(value):
@@ -60,16 +90,18 @@ def _candidate_urls(camera_input: str) -> list[str]:
             raise ValueError("Enter a valid camera URL or IP")
         return [
             f"http://{host}:{port}/video",
-            f"http://{host}:{port}",
-            f"rtsp://{host}:{port}",
+            f"http://{host}:{port}/videofeed",
+            f"http://{host}:{port}/shot.jpg",
+            f"rtsp://{host}:{port}/live",
         ]
 
     return [
         f"http://{value}:8080/video",
+        f"http://{value}:8080/videofeed",
         f"http://{value}:4747/video",
-        f"rtsp://{value}:8554",
-        f"rtsp://{value}:8556",
-        f"http://{value}/video",
+        f"http://{value}:8080/shot.jpg",
+        f"rtsp://{value}:8554/live",
+        f"rtsp://{value}:554/live",
     ]
 
 
@@ -79,6 +111,82 @@ def normalize_camera_url(camera_input: str) -> str:
 
 def normalize_side_camera_url(raw_url: str) -> str:
     return normalize_camera_url(raw_url)
+
+
+def _http_status(url: str, timeout_seconds: float) -> tuple[int | None, int | None, str]:
+    if not url.startswith(("http://", "https://")):
+        return None, None, ""
+    started = time.monotonic()
+    try:
+        request = Request(
+            url,
+            headers={
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Range": "bytes=0-0",
+                "User-Agent": "EYE-q-side-camera-check",
+            },
+        )
+        with urlopen(request, timeout=timeout_seconds) as response:
+            response.read(1)
+            latency_ms = int((time.monotonic() - started) * 1000)
+            return response.status, latency_ms, ""
+    except Exception as exc:
+        latency_ms = int((time.monotonic() - started) * 1000)
+        status = getattr(getattr(exc, "fp", None), "status", None)
+        return status, latency_ms, str(exc)
+
+
+def _read_http_snapshot_frame(url: str):
+    cache_buster = int(time.time() * 1000)
+    separator = "&" if "?" in url else "?"
+    request = Request(
+        f"{url}{separator}eyeq_t={cache_buster}",
+        headers={
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "User-Agent": "EYE-q-side-camera-check",
+        },
+    )
+    with urlopen(request, timeout=2.0) as response:
+        data = response.read()
+    import numpy as np
+
+    cv2 = _cv2()
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+
+
+def _frames_are_different(first, second) -> bool:
+    if first is None or second is None:
+        return False
+    cv2 = _cv2()
+    try:
+        if first.shape != second.shape:
+            second = cv2.resize(second, (first.shape[1], first.shape[0]))
+        first_gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
+        second_gray = cv2.cvtColor(second, cv2.COLOR_BGR2GRAY)
+        diff = cv2.absdiff(first_gray, second_gray)
+        return float(diff.mean()) > 0.2
+    except Exception:
+        logger.exception("Side camera frame-difference check failed")
+        return False
+
+
+def _read_two_frames(url: str, timeout_seconds: float):
+    if detect_stream_type(url) == "HTTP_JPEG_SNAPSHOT":
+        first = _read_http_snapshot_frame(url)
+        time.sleep(0.75)
+        second = _read_http_snapshot_frame(url)
+        return first, second
+
+    first_ok, first = read_side_camera_frame(url, timeout_seconds=timeout_seconds)
+    if not first_ok:
+        return None, None
+    time.sleep(0.75)
+    second_ok, second = read_side_camera_frame(url, timeout_seconds=timeout_seconds)
+    if not second_ok:
+        return first, None
+    return first, second
 
 
 class IPCameraReader:
@@ -181,6 +289,19 @@ class IPCameraReader:
         self._fps_window_at = now
 
 def read_side_camera_frame(url: str, timeout_seconds: float = 4.0):
+    if detect_stream_type(url) == "HTTP_JPEG_SNAPSHOT":
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                frame = _read_http_snapshot_frame(url)
+            except Exception:
+                logger.exception("Side camera snapshot read failed; url=%s", url)
+                frame = None
+            if frame is not None:
+                return True, frame
+            time.sleep(0.1)
+        return False, None
+
     reader = _get_reader(url)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -192,13 +313,52 @@ def read_side_camera_frame(url: str, timeout_seconds: float = 4.0):
 
 
 def test_camera_connection(camera_input: str, timeout_seconds: float = 4.0):
-    errors: list[str] = []
+    result = test_camera_connection_detailed(camera_input, timeout_seconds)
+    return result.success, result.resolved_url, result.stream_type, result.frame
+
+
+def test_camera_connection_detailed(
+    camera_input: str,
+    timeout_seconds: float = 4.0,
+) -> CameraConnectionResult:
+    attempts: list[CameraAttempt] = []
     for candidate in _candidate_urls(camera_input):
-        ok, frame = read_side_camera_frame(candidate, timeout_seconds=timeout_seconds)
-        if ok and frame is not None and frame.size > 0:
-            return True, candidate, detect_stream_type(candidate), frame
-        errors.append(candidate)
-    return False, "", "UNKNOWN", None
+        stream_type = detect_stream_type(candidate)
+        status, latency_ms, http_error = _http_status(candidate, min(timeout_seconds, 2.0))
+        attempt = CameraAttempt(
+            url=candidate,
+            stream_type=stream_type,
+            http_status=status,
+            latency_ms=latency_ms,
+            error=http_error,
+        )
+        started = time.monotonic()
+        try:
+            first, second = _read_two_frames(candidate, timeout_seconds=timeout_seconds)
+            attempt.latency_ms = attempt.latency_ms or int((time.monotonic() - started) * 1000)
+            attempt.success = first is not None and getattr(first, "size", 0) > 0
+            attempt.live = attempt.success and _frames_are_different(first, second)
+            if attempt.success and attempt.live:
+                attempts.append(attempt)
+                return CameraConnectionResult(
+                    success=True,
+                    resolved_url=candidate,
+                    stream_type=stream_type,
+                    frame=second,
+                    http_status=status,
+                    latency_ms=attempt.latency_ms,
+                    live=True,
+                    attempts=attempts,
+                )
+            if attempt.success:
+                attempt.error = "A frame loaded, but it did not update during the live check"
+        except Exception as exc:
+            logger.exception("Side camera test failed; url=%s", candidate)
+            attempt.error = str(exc)
+            attempt.latency_ms = attempt.latency_ms or int((time.monotonic() - started) * 1000)
+        attempts.append(attempt)
+
+    return CameraConnectionResult(success=False, attempts=attempts)
 
 
 def _get_reader(url: str) -> IPCameraReader:

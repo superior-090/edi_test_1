@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -381,6 +382,7 @@ class _ExamCard extends StatefulWidget {
 class _ExamCardState extends State<_ExamCard> {
   bool _validating = false;
   String _sideCameraState = 'CONNECTING';
+  Map<String, dynamic>? _lastSideCameraResult;
 
   @override
   Widget build(BuildContext context) {
@@ -510,6 +512,12 @@ class _ExamCardState extends State<_ExamCard> {
     while (mounted && sideIp != null && sideIp.trim().isNotEmpty) {
       final validatedUrl = await _validateSideCamera(app, sideIp.trim());
       if (validatedUrl != null) {
+        final confirmed = await _showSideCameraPreviewDialog(
+          this.context,
+          validatedUrl,
+          _lastSideCameraResult ?? const {},
+        );
+        if (confirmed != true) return;
         await app.rememberSideCameraUrl(validatedUrl);
         if (!mounted) return;
         Navigator.push(
@@ -556,7 +564,7 @@ class _ExamCardState extends State<_ExamCard> {
             labelText: 'Camera URL or IP',
             hintText: '192.168.0.5 or rtsp://admin:pass@192.168.0.5:8554',
             helperText:
-                'Examples: 192.168.0.5, http://192.168.0.5:8080/video, rtsp://admin:pass@192.168.0.5:8554',
+                'IP Webcam works with http://PHONE_IP:8080/video. Phone and laptop must be on same WiFi.',
             prefixIcon: Icon(Icons.settings_input_antenna),
           ),
         ),
@@ -583,7 +591,9 @@ class _ExamCardState extends State<_ExamCard> {
     });
     try {
       final result = await app.api.validateSideCamera(sideIp);
+      _lastSideCameraResult = result;
       final success = result['success'] == true;
+      final liveConfirmed = result['live_frames_confirmed'] == true;
       final resolvedUrl = result['resolved_url']?.toString() ?? '';
       final normalizedUrl = resolvedUrl.isNotEmpty
           ? resolvedUrl
@@ -593,9 +603,13 @@ class _ExamCardState extends State<_ExamCard> {
             (result['state'] ?? (success ? 'ONLINE' : 'STREAM_FAILED'))
                 .toString();
       });
-      if (success) return normalizedUrl;
+      if (success && liveConfirmed) return normalizedUrl;
       return null;
     } catch (error) {
+      _lastSideCameraResult = {
+        'message': error.toString(),
+        'attempted_url': sideIp,
+      };
       if (mounted) setState(() => _sideCameraState = 'CAMERA_OFFLINE');
       return null;
     } finally {
@@ -611,7 +625,10 @@ class _ExamCardState extends State<_ExamCard> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('Unable to connect to side camera'),
-        content: Text(_sideCameraFailureText(_sideCameraState)),
+        content: _SideCameraFailureDetails(
+          state: _sideCameraState,
+          result: _lastSideCameraResult,
+        ),
         actions: [
           TextButton(
             onPressed: () =>
@@ -635,14 +652,227 @@ class _ExamCardState extends State<_ExamCard> {
     );
   }
 
-  String _sideCameraFailureText(String state) {
+  Future<bool?> _showSideCameraPreviewDialog(
+    BuildContext context,
+    String url,
+    Map<String, dynamic> result,
+  ) {
+    final streamType = result['stream_type']?.toString() ?? 'UNKNOWN';
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Side Camera Ready'),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              AspectRatio(
+                aspectRatio: 16 / 9,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: _DirectSideCameraPreview(url: url),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _SideCameraDebugDetails(result: result, fallbackUrl: url),
+              if (kIsWeb && streamType == 'RTSP') ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Raw RTSP cannot be rendered reliably in the browser. Use the IP Webcam HTTP stream, for example http://PHONE_IP:8080/video.',
+                  style: TextStyle(color: Colors.orangeAccent),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Re-enter IP'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Start Exam'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DirectSideCameraPreview extends StatefulWidget {
+  const _DirectSideCameraPreview({required this.url});
+
+  final String url;
+
+  @override
+  State<_DirectSideCameraPreview> createState() =>
+      _DirectSideCameraPreviewState();
+}
+
+class _DirectSideCameraPreviewState extends State<_DirectSideCameraPreview> {
+  Timer? _timer;
+  int _cacheKey = 0;
+
+  bool get _isRefreshableSnapshot =>
+      widget.url.toLowerCase().contains('/shot.jpg');
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isRefreshableSnapshot) {
+      _timer = Timer.periodic(
+        const Duration(milliseconds: 500),
+        (_) => setState(() => _cacheKey++),
+      );
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _DirectSideCameraPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _timer?.cancel();
+      if (_isRefreshableSnapshot) {
+        _timer = Timer.periodic(
+          const Duration(milliseconds: 500),
+          (_) => setState(() => _cacheKey++),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final url = _withCacheBuster(widget.url, _cacheKey);
+    if (widget.url.toLowerCase().startsWith('rtsp://')) {
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'RTSP validated by the server. Browser preview requires an HTTP/MJPEG IP Webcam URL.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
+        ),
+      );
+    }
+    return Image.network(
+      url,
+      fit: BoxFit.contain,
+      gaplessPlayback: true,
+      webHtmlElementStrategy: kIsWeb
+          ? WebHtmlElementStrategy.prefer
+          : WebHtmlElementStrategy.never,
+      errorBuilder: (context, error, stackTrace) => const ColoredBox(
+        color: Colors.black,
+        child: Center(
+          child: Text(
+            'Preview blocked by the browser. The server still confirmed live frames.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _withCacheBuster(String url, int cacheKey) {
+    if (!_isRefreshableSnapshot) return url;
+    final separator = url.contains('?') ? '&' : '?';
+    return '$url${separator}eyeq_t=$cacheKey';
+  }
+}
+
+class _SideCameraDebugDetails extends StatelessWidget {
+  const _SideCameraDebugDetails({
+    required this.result,
+    required this.fallbackUrl,
+  });
+
+  final Map<String, dynamic> result;
+  final String fallbackUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    final attemptedUrl =
+        result['attempted_url']?.toString().trim().isNotEmpty == true
+        ? result['attempted_url'].toString()
+        : fallbackUrl;
+    final status = result['http_status']?.toString() ?? 'n/a';
+    final streamType = result['stream_type']?.toString() ?? 'UNKNOWN';
+    final latency = result['latency_ms']?.toString() ?? 'n/a';
+    return DefaultTextStyle(
+      style: const TextStyle(color: Colors.white70, fontSize: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Attempted URL: $attemptedUrl'),
+          Text('HTTP status: $status'),
+          Text('Stream type: $streamType'),
+          Text('Latency: ${latency}ms'),
+          const Text('Live frames: confirmed'),
+        ],
+      ),
+    );
+  }
+}
+
+class _SideCameraFailureDetails extends StatelessWidget {
+  const _SideCameraFailureDetails({required this.state, required this.result});
+
+  final String state;
+  final Map<String, dynamic>? result;
+
+  @override
+  Widget build(BuildContext context) {
+    final data = result ?? const {};
+    final attemptedUrl = data['attempted_url']?.toString() ?? '';
+    final status = data['http_status']?.toString() ?? 'n/a';
+    final streamType = data['stream_type']?.toString() ?? 'UNKNOWN';
+    final latency = data['latency_ms']?.toString() ?? 'n/a';
+    return SizedBox(
+      width: 520,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(_failureText(state)),
+          const SizedBox(height: 12),
+          if (attemptedUrl.isNotEmpty) Text('Attempted URL: $attemptedUrl'),
+          Text('HTTP status: $status'),
+          Text('Stream type: $streamType'),
+          Text('Latency: ${latency}ms'),
+          const SizedBox(height: 12),
+          const Text(
+            'Troubleshooting: open the Android IP Webcam app, tap Start server, keep phone and laptop on the same WiFi, try http://PHONE_IP:8080/video, and avoid RTSP on Flutter Web.',
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _failureText(String state) {
     return switch (state) {
       'INVALID_IP' =>
-        'Enter a camera URL or IP, for example 192.168.0.5, http://192.168.0.5:8080/video, or rtsp://admin:pass@192.168.0.5:8554.',
+        'Enter a camera URL or IP, for example 192.168.0.5 or http://192.168.0.5:8080/video.',
       'CAMERA_OFFLINE' =>
         'The camera is offline or did not return a valid frame.',
       _ =>
-        'Unable to connect. I tried the entered URL and common HTTP/RTSP formats when possible. Check that the stream is open and reachable.',
+        'Unable to connect with live updating frames. A still frame is not enough to start the exam.',
     };
   }
 }

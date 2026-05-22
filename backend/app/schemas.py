@@ -101,6 +101,12 @@ class SideCameraValidationResponse(BaseModel):
     resolved_url: str = ""
     stream_type: str = "UNKNOWN"
     state: str = "STREAM_FAILED"
+    attempted_url: str = ""
+    attempted_urls: List[str] = Field(default_factory=list)
+    http_status: Optional[int] = None
+    latency_ms: Optional[int] = None
+    live_frames_confirmed: bool = False
+    attempts: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class ProctorSimpleResponse(BaseModel):
