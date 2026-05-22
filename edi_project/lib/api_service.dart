@@ -138,7 +138,7 @@ class ApiService {
     throw ApiException(_errorMessage(body), streamed.statusCode);
   }
 
-  Future<List<dynamic>> getQuestionImages({
+  Future<List<Map<String, dynamic>>> getQuestionImages({
     int? examId,
     String? subject,
     String? examTitle,
@@ -151,7 +151,7 @@ class ApiService {
       }),
       headers: _headers,
     );
-    return _decodeList(response);
+    return _decodeMapList(response);
   }
 
   Future<Map<String, dynamic>> getStudentProfile() async {
@@ -270,7 +270,15 @@ class ApiService {
     return _decodeMap(response);
   }
 
-  Future<List<dynamic>> uploadTeacherQuestionImages({
+  Future<List<Map<String, dynamic>>> getTeacherQuestionImages(int examId) async {
+    final response = await http.get(
+      _uri('/teacher/exams/$examId/question-images'),
+      headers: _headers,
+    );
+    return _decodeMapList(response);
+  }
+
+  Future<List<Map<String, dynamic>>> uploadTeacherQuestionImages({
     required int examId,
     required List<QuestionImageUpload> images,
   }) async {
@@ -294,7 +302,10 @@ class ApiService {
     final streamed = await request.send().timeout(const Duration(seconds: 30));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
-      return jsonDecode(body) as List<dynamic>;
+      final decoded = jsonDecode(body) as List<dynamic>;
+      return decoded
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList(growable: false);
     }
     throw ApiException(_errorMessage(body), streamed.statusCode);
   }
@@ -661,6 +672,16 @@ class ApiService {
   List<dynamic> _decodeList(http.Response response) {
     if (response.statusCode >= 200 && response.statusCode < 300) {
       return jsonDecode(response.body) as List<dynamic>;
+    }
+    throw ApiException(_errorMessage(response.body), response.statusCode);
+  }
+
+  List<Map<String, dynamic>> _decodeMapList(http.Response response) {
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      final decoded = jsonDecode(response.body) as List<dynamic>;
+      return decoded
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList(growable: false);
     }
     throw ApiException(_errorMessage(response.body), response.statusCode);
   }

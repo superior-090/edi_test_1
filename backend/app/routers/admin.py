@@ -130,7 +130,7 @@ def list_question_images(
     subject: str | None = None,
     exam_title: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "proctor")),
+    user: User = Depends(require_role("admin")),
 ):
     query = db.query(ExamQuestionImage).filter(ExamQuestionImage.is_active == True)
     if subject and subject.upper() != "ALL":
@@ -152,7 +152,7 @@ async def upload_question_image(
     sort_order: int | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "proctor")),
+    user: User = Depends(require_role("admin")),
 ):
     content_type = (file.content_type or "").lower()
     if content_type not in ALLOWED_QUESTION_IMAGE_TYPES:
@@ -199,7 +199,7 @@ async def upload_question_image(
 def delete_question_image(
     image_id: int,
     db: Session = Depends(get_db),
-    user: User = Depends(require_role("admin", "proctor")),
+    user: User = Depends(require_role("admin")),
 ):
     image = db.query(ExamQuestionImage).filter(ExamQuestionImage.id == image_id).first()
     if image is None:

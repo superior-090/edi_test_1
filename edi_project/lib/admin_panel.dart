@@ -6,7 +6,6 @@ import 'package:provider/provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'app_state.dart';
-import 'question_image_picker.dart';
 import 'video_screen.dart';
 
 class AdminPanel extends StatefulWidget {
@@ -22,15 +21,10 @@ class _AdminPanelState extends State<AdminPanel> {
   Timer? _heartbeatTimer;
   bool _connected = false;
   bool _loading = true;
-  bool _questionImagesLoading = false;
-  bool _questionImageUploading = false;
   String _subject = 'ALL';
-  String _questionSubject = 'CS';
-  String _questionExamTitle = 'Computer Science 101';
 
   final Map<String, Map<String, dynamic>> _sessions = {};
   final List<Map<String, dynamic>> _events = [];
-  final List<Map<String, dynamic>> _questionImages = [];
   Map<String, dynamic> _stats = {
     'total_active': 0,
     'total_cheating': 0,
@@ -55,10 +49,6 @@ class _AdminPanelState extends State<AdminPanel> {
       final sessions = await api.getSessions(subject: _subject);
       final stats = await api.getDashboardStats();
       final events = await api.getEvents();
-      final questionImages = await api.getAdminQuestionImages(
-        subject: _questionSubject,
-        examTitle: _questionExamTitle,
-      );
       if (!mounted) return;
       setState(() {
         _sessions
@@ -75,13 +65,6 @@ class _AdminPanelState extends State<AdminPanel> {
           ..addAll(
             events.map((item) => Map<String, dynamic>.from(item as Map)),
           );
-        _questionImages
-          ..clear()
-          ..addAll(
-            questionImages.map(
-              (item) => Map<String, dynamic>.from(item as Map),
-            ),
-          );
       });
     } catch (error) {
       if (mounted) {
@@ -91,68 +74,6 @@ class _AdminPanelState extends State<AdminPanel> {
       }
     } finally {
       if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _loadQuestionImages() async {
-    setState(() => _questionImagesLoading = true);
-    try {
-      final images = await context.read<AppState>().api.getAdminQuestionImages(
-        subject: _questionSubject,
-        examTitle: _questionExamTitle,
-      );
-      if (!mounted) return;
-      setState(() {
-        _questionImages
-          ..clear()
-          ..addAll(images.map((item) => Map<String, dynamic>.from(item as Map)));
-      });
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Question images refresh failed: $error')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _questionImagesLoading = false);
-    }
-  }
-
-  Future<void> _uploadQuestionImage() async {
-    final picked = await pickQuestionImage();
-    if (picked == null || !mounted) return;
-    setState(() => _questionImageUploading = true);
-    try {
-      await context.read<AppState>().api.uploadQuestionImage(
-        imageBytes: picked.bytes,
-        filename: picked.name,
-        contentType: picked.contentType,
-        subject: _questionSubject,
-        examTitle: _questionExamTitle,
-        sortOrder: _questionImages.length + 1,
-      );
-      await _loadQuestionImages();
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Question image upload failed: $error')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _questionImageUploading = false);
-    }
-  }
-
-  Future<void> _deleteQuestionImage(int imageId) async {
-    try {
-      await context.read<AppState>().api.deleteQuestionImage(imageId);
-      await _loadQuestionImages();
-    } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delete failed: $error')),
-        );
-      }
     }
   }
 
@@ -350,23 +271,6 @@ class _AdminPanelState extends State<AdminPanel> {
                         _loadDashboard();
                       },
                     ),
-                    const SizedBox(height: 12),
-                    _QuestionImageManager(
-                      subject: _questionSubject,
-                      examTitle: _questionExamTitle,
-                      images: _questionImages,
-                      loading: _questionImagesLoading,
-                      uploading: _questionImageUploading,
-                      onExamChanged: (subject, title) {
-                        setState(() {
-                          _questionSubject = subject;
-                          _questionExamTitle = title;
-                        });
-                        _loadQuestionImages();
-                      },
-                      onUpload: _uploadQuestionImage,
-                      onDelete: _deleteQuestionImage,
-                    ),
                     const SizedBox(height: 16),
                     _StatsBar(stats: _stats),
                     const SizedBox(height: 16),
@@ -456,185 +360,6 @@ class _StatsBar extends StatelessWidget {
           color: Colors.greenAccent,
         ),
       ],
-    );
-  }
-}
-
-class _QuestionImageManager extends StatelessWidget {
-  const _QuestionImageManager({
-    required this.subject,
-    required this.examTitle,
-    required this.images,
-    required this.loading,
-    required this.uploading,
-    required this.onExamChanged,
-    required this.onUpload,
-    required this.onDelete,
-  });
-
-  final String subject;
-  final String examTitle;
-  final List<Map<String, dynamic>> images;
-  final bool loading;
-  final bool uploading;
-  final void Function(String subject, String title) onExamChanged;
-  final VoidCallback onUpload;
-  final ValueChanged<int> onDelete;
-
-  static const exams = [
-    ('CS', 'Computer Science 101'),
-    ('AI', 'AI and Ethics'),
-    ('SEC', 'Digital Security'),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    final selected = exams.firstWhere(
-      (item) => item.$1 == subject && item.$2 == examTitle,
-      orElse: () => exams.first,
-    );
-    final api = context.read<AppState>().api;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF0F172A),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.22)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.image, color: Colors.cyanAccent),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'Question Images',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              ),
-              FilledButton.icon(
-                onPressed: uploading ? null : onUpload,
-                icon: uploading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.upload_file),
-                label: Text(uploading ? 'Uploading' : 'Upload'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              DropdownButton<({String subject, String title})>(
-                value: (subject: selected.$1, title: selected.$2),
-                items: [
-                  for (final exam in exams)
-                    DropdownMenuItem(
-                      value: (subject: exam.$1, title: exam.$2),
-                      child: Text('${exam.$1} - ${exam.$2}'),
-                    ),
-                ],
-                onChanged: (value) {
-                  if (value != null) onExamChanged(value.subject, value.title);
-                },
-              ),
-              if (loading)
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                Text(
-                  '${images.length} uploaded',
-                  style: const TextStyle(color: Colors.white60),
-                ),
-            ],
-          ),
-          if (images.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 132,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: images.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 10),
-                itemBuilder: (context, index) {
-                  final image = images[index];
-                  final id = (image['id'] as num).toInt();
-                  return SizedBox(
-                    width: 170,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.network(
-                            api.getQuestionImageUrl(id),
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) =>
-                                const ColoredBox(
-                                  color: Colors.black,
-                                  child: Icon(Icons.broken_image),
-                                ),
-                          ),
-                        ),
-                        Positioned(
-                          left: 6,
-                          top: 6,
-                          child: _ImageOrderBadge(
-                            label: '${image['sort_order'] ?? index + 1}',
-                          ),
-                        ),
-                        Positioned(
-                          right: 4,
-                          top: 4,
-                          child: IconButton.filledTonal(
-                            tooltip: 'Remove image',
-                            onPressed: () => onDelete(id),
-                            icon: const Icon(Icons.delete, size: 18),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _ImageOrderBadge extends StatelessWidget {
-  const _ImageOrderBadge({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black54,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        label,
-        style: const TextStyle(fontWeight: FontWeight.w900),
-      ),
     );
   }
 }

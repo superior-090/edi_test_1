@@ -36,7 +36,14 @@ from ..security import get_db, require_role
 router = APIRouter(prefix="/teacher", tags=["teacher"])
 
 QUESTION_IMAGE_DIR = Path(__file__).resolve().parents[2] / "uploads" / "question_images"
-ALLOWED_IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg"}
+ALLOWED_IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+}
 
 
 def _teacher_profile(db: Session, user: User) -> Teacher:
@@ -104,6 +111,44 @@ def _question_image_out(image: QuestionImage, exam: Exam | None = None, subject:
         question_number=image.question_number,
         created_at=image.created_at,
     ).model_dump(mode="json")
+
+
+def _content_type_from_filename(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    return {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }.get(suffix, "")
+
+
+def _content_type_from_bytes(contents: bytes) -> str:
+    if contents.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if contents.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if contents.startswith(b"GIF87a") or contents.startswith(b"GIF89a"):
+        return "image/gif"
+    if contents.startswith(b"BM"):
+        return "image/bmp"
+    if len(contents) >= 12 and contents[:4] == b"RIFF" and contents[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _resolve_image_type(file: UploadFile, contents: bytes) -> str:
+    candidates = [
+        (file.content_type or "").split(";")[0].strip().lower(),
+        _content_type_from_filename(file.filename),
+        _content_type_from_bytes(contents),
+    ]
+    for content_type in candidates:
+        if content_type in ALLOWED_IMAGE_TYPES:
+            return content_type
+    raise HTTPException(status_code=415, detail="Upload a valid image file")
 
 
 def _teacher_exam_ids(db: Session, teacher_id: int) -> list[int]:
@@ -356,6 +401,24 @@ def delete_exam(
     return {"status": "deleted", "id": exam_id}
 
 
+@router.get("/exams/{exam_id}/question-images", response_model=list[QuestionImageOut])
+def list_question_images(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    teacher = _teacher_profile(db, user)
+    exam = _exam_for_teacher(db, exam_id, teacher.id)
+    subject = db.query(Subject).filter(Subject.id == exam.subject_id).first()
+    images = (
+        db.query(QuestionImage)
+        .filter(QuestionImage.exam_id == exam.id)
+        .order_by(QuestionImage.question_number.asc(), QuestionImage.id.asc())
+        .all()
+    )
+    return [_question_image_out(image, exam, subject) for image in images]
+
+
 @router.post("/exams/{exam_id}/question-images", response_model=list[QuestionImageOut])
 async def upload_question_images(
     exam_id: int,
@@ -376,12 +439,10 @@ async def upload_question_images(
     next_number = (current_max[0] + 1) if current_max else 1
     saved: list[QuestionImage] = []
     for offset, file in enumerate(files):
-        content_type = (file.content_type or "").lower()
-        if content_type not in ALLOWED_IMAGE_TYPES:
-            raise HTTPException(status_code=415, detail="Upload PNG or JPG question images only")
         contents = await file.read()
         if not contents:
             raise HTTPException(status_code=422, detail=f"{file.filename or 'image'} is empty")
+        content_type = _resolve_image_type(file, contents)
         stored_name = f"{uuid.uuid4().hex}{ALLOWED_IMAGE_TYPES[content_type]}"
         (QUESTION_IMAGE_DIR / stored_name).write_bytes(contents)
         image = QuestionImage(

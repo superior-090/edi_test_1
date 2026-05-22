@@ -127,15 +127,14 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         examTitle: widget.examTitle,
       );
       if (!mounted) return;
-      final imageQuestions = rows.map((item) {
-        final map = Map<String, dynamic>.from(item as Map);
-        final id = (map['id'] as num).toInt();
-        return _Question.image(
-          id: id,
-          imageUrl: api.getQuestionImageUrl(id),
-          filename: map['original_filename']?.toString() ?? 'Question image',
-        );
-      }).toList();
+      final List<_Question> imageQuestions = rows
+          .map<_Question>(
+            (map) => _Question.fromImageJson(
+              map,
+              imageUrlForId: api.getQuestionImageUrl,
+            ),
+          )
+          .toList(growable: false);
       setState(() {
         _questions = imageQuestions.isEmpty ? _fallbackQuestions : imageQuestions;
         _currentIndex = 0;
@@ -1440,24 +1439,47 @@ class _WatermarkOverlay extends StatelessWidget {
 
 class _Question {
   const _Question.text(this.title, this.options)
-    : imageId = null,
+    : id = null,
       imageUrl = null,
       filename = null;
 
   const _Question.image({
-    required this.imageId,
+    required this.id,
     required this.imageUrl,
     required this.filename,
   }) : title = '',
        options = const [];
 
+  factory _Question.fromImageJson(
+    Map<String, dynamic> json, {
+    required String Function(int id) imageUrlForId,
+  }) {
+    final id = _readRequiredInt(json, 'id');
+    return _Question.image(
+      id: id,
+      imageUrl: imageUrlForId(id),
+      filename: json['original_filename']?.toString() ?? 'Question image',
+    );
+  }
+
   final String title;
   final List<String> options;
-  final int? imageId;
+  final int? id;
   final String? imageUrl;
   final String? filename;
 
   bool get isImage => imageUrl != null;
+
+  static int _readRequiredInt(Map<String, dynamic> json, String key) {
+    final value = json[key];
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) {
+      final parsed = int.tryParse(value);
+      if (parsed != null) return parsed;
+    }
+    throw FormatException('Question image "$key" must be an integer.');
+  }
 }
 
 class _StatusChip extends StatelessWidget {

@@ -21,7 +21,7 @@ Future<PickedQuestionImage?> pickQuestionImage() async {
 
 Future<List<PickedQuestionImage>> pickQuestionImages({bool multiple = true}) async {
   final input = html.FileUploadInputElement()
-    ..accept = 'image/png,image/jpeg'
+    ..accept = 'image/*'
     ..multiple = multiple;
   input.click();
   await input.onChange.first;
@@ -39,8 +39,21 @@ Future<List<PickedQuestionImage>> pickQuestionImages({bool multiple = true}) asy
     picked.add(PickedQuestionImage(
       bytes: Uint8List.view(result),
       name: file.name,
-      contentType: file.type.isEmpty ? 'image/png' : file.type,
+      contentType: _imageContentType(file.name, file.type),
     ));
   }
   return picked;
+}
+
+String _imageContentType(String filename, String browserType) {
+  final type = browserType.trim().toLowerCase();
+  if (type.startsWith('image/')) return type;
+
+  final name = filename.toLowerCase();
+  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
+  if (name.endsWith('.png')) return 'image/png';
+  if (name.endsWith('.webp')) return 'image/webp';
+  if (name.endsWith('.gif')) return 'image/gif';
+  if (name.endsWith('.bmp')) return 'image/bmp';
+  return 'application/octet-stream';
 }

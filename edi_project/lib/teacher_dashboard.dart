@@ -301,28 +301,112 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     }
   }
 
-  Future<void> _uploadImages(Map<String, dynamic> exam) async {
-    final picked = await pickQuestionImages();
-    if (picked.isEmpty) return;
+  Future<List<Map<String, dynamic>>> _loadTeacherQuestionImages(int examId) async {
+    final rows = await _api.getTeacherQuestionImages(examId);
+    return _maps(rows);
+  }
+
+  Future<void> _openQuestionImages(Map<String, dynamic> exam) async {
+    final examId = (exam['id'] as num).toInt();
     setState(() => _busy = true);
+    List<Map<String, dynamic>> images;
     try {
-      await _api.uploadTeacherQuestionImages(
-        examId: (exam['id'] as num).toInt(),
-        images: [
-          for (final image in picked)
-            QuestionImageUpload(
-              bytes: image.bytes,
-              filename: image.name,
-              contentType: image.contentType,
-            ),
-        ],
-      );
-      await _loadAll();
+      images = await _loadTeacherQuestionImages(examId);
     } catch (error) {
-      _showError('Question upload failed: $error');
+      _showError('Question images refresh failed: $error');
+      return;
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        var uploading = false;
+        var deletingId = 0;
+
+        Future<void> refresh(StateSetter setDialogState) async {
+          final updated = await _loadTeacherQuestionImages(examId);
+          if (dialogContext.mounted) {
+            setDialogState(() => images = updated);
+          }
+        }
+
+        Future<void> upload(StateSetter setDialogState) async {
+          final picked = await pickQuestionImages();
+          if (picked.isEmpty || !dialogContext.mounted) return;
+          setDialogState(() => uploading = true);
+          try {
+            await _api.uploadTeacherQuestionImages(
+              examId: examId,
+              images: [
+                for (final image in picked)
+                  QuestionImageUpload(
+                    bytes: image.bytes,
+                    filename: image.name,
+                    contentType: image.contentType,
+                  ),
+              ],
+            );
+            await refresh(setDialogState);
+          } catch (error) {
+            _showError('Question upload failed: $error');
+          } finally {
+            if (dialogContext.mounted) {
+              setDialogState(() => uploading = false);
+            }
+          }
+        }
+
+        Future<void> deleteImage(int imageId, StateSetter setDialogState) async {
+          setDialogState(() => deletingId = imageId);
+          try {
+            await _api.deleteTeacherQuestionImage(imageId);
+            await refresh(setDialogState);
+          } catch (error) {
+            _showError('Question image delete failed: $error');
+          } finally {
+            if (dialogContext.mounted) {
+              setDialogState(() => deletingId = 0);
+            }
+          }
+        }
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: Text('Questions - ${exam['title']}'),
+            content: SizedBox(
+              width: 760,
+              height: 480,
+              child: _TeacherQuestionImageGrid(
+                images: images,
+                deletingId: deletingId,
+                onDelete: (imageId) => deleteImage(imageId, setDialogState),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: uploading ? null : () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+              FilledButton.icon(
+                onPressed: uploading ? null : () => upload(setDialogState),
+                icon: uploading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.upload_file),
+                label: Text(uploading ? 'Uploading' : 'Upload images'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (mounted) await _loadCurrentTab(showLoading: false);
   }
 
   Future<void> _export(String format) async {
@@ -549,7 +633,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
           ..._exams.map((exam) => _ExamManageTile(
                 exam: exam,
                 onEdit: () => _openExamDialog(exam),
-                onUpload: () => _uploadImages(exam),
+                onUpload: () => _openQuestionImages(exam),
                 onDelete: () => _deleteExam(exam),
                 onTogglePublish: () {
                   final updated = {...exam, 'is_published': exam['is_published'] != true};
@@ -919,12 +1003,133 @@ class _ExamManageTile extends StatelessWidget {
               ),
             ),
             _PublishBadge(published: exam['is_published'] == true),
-            IconButton(tooltip: 'Upload question images', onPressed: onUpload, icon: const Icon(Icons.upload_file)),
+            IconButton(tooltip: 'Manage question images', onPressed: onUpload, icon: const Icon(Icons.upload_file)),
             IconButton(tooltip: 'Edit', onPressed: onEdit, icon: const Icon(Icons.edit)),
             IconButton(tooltip: exam['is_published'] == true ? 'Unpublish' : 'Publish', onPressed: onTogglePublish, icon: const Icon(Icons.publish)),
             IconButton(tooltip: 'Delete', onPressed: onDelete, icon: const Icon(Icons.delete)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TeacherQuestionImageGrid extends StatelessWidget {
+  const _TeacherQuestionImageGrid({
+    required this.images,
+    required this.deletingId,
+    required this.onDelete,
+  });
+
+  final List<Map<String, dynamic>> images;
+  final int deletingId;
+  final ValueChanged<int> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    if (images.isEmpty) {
+      return const Center(
+        child: Text(
+          'No question images uploaded for this exam',
+          style: TextStyle(color: Colors.white60),
+        ),
+      );
+    }
+
+    final api = context.read<AppState>().api;
+    return GridView.builder(
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 190,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 0.86,
+      ),
+      itemCount: images.length,
+      itemBuilder: (context, index) {
+        final image = images[index];
+        final id = (image['id'] as num).toInt();
+        final deleting = deletingId == id;
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white12),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.network(
+                      api.getQuestionImageUrl(id),
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const ColoredBox(
+                            color: Colors.black,
+                            child: Icon(Icons.broken_image),
+                          ),
+                    ),
+                    Positioned(
+                      left: 6,
+                      top: 6,
+                      child: _QuestionImageOrderBadge(
+                        label: '${image['question_number'] ?? index + 1}',
+                      ),
+                    ),
+                    Positioned(
+                      right: 4,
+                      top: 4,
+                      child: IconButton.filledTonal(
+                        tooltip: 'Remove image',
+                        onPressed: deleting ? null : () => onDelete(id),
+                        icon: deleting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.delete, size: 18),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(
+                  image['original_filename']?.toString() ?? 'Question image',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _QuestionImageOrderBadge extends StatelessWidget {
+  const _QuestionImageOrderBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w900),
       ),
     );
   }
@@ -959,13 +1164,17 @@ class _SubjectFilter extends StatelessWidget {
   Widget build(BuildContext context) {
     return DropdownButtonFormField<int?>(
       value: selected,
+      isExpanded: true,
       decoration: const InputDecoration(labelText: 'Subject filter', prefixIcon: Icon(Icons.filter_list)),
       items: [
         const DropdownMenuItem<int?>(value: null, child: Text('All subjects')),
         for (final subject in subjects)
           DropdownMenuItem<int?>(
             value: (subject['id'] as num).toInt(),
-            child: Text('${subject['subject_code']} - ${subject['subject_name']}'),
+            child: Text(
+              '${subject['subject_code']} - ${subject['subject_name']}',
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
       ],
       onChanged: onChanged,
