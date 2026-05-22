@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..models import Exam, ExamAttempt, Question, QuestionImage, Result, StudentProfile, Subject, User
+from ..models import Exam, ExamAttempt, Question, QuestionImage, Result, StudentProfile, Subject, Teacher, User
 from ..schemas import StudentProfileIn, StudentProfileOut
 from ..security import get_current_user, get_db, require_role
 
@@ -93,35 +93,23 @@ def available_exams(
     db: Session = Depends(get_db),
     user: User = Depends(require_role("candidate", "student")),
 ):
-    profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
-    if not _profile_complete(profile):
-        raise HTTPException(status_code=409, detail="Complete student profile before joining exams")
-
     now = datetime.now(timezone.utc)
     rows = (
-        db.query(Exam, Subject)
+        db.query(Exam, Subject, Teacher)
         .join(Subject, Exam.subject_id == Subject.id)
+        .outerjoin(Teacher, Exam.teacher_id == Teacher.id)
         .filter(Exam.is_published.is_(True))
         .filter(or_(Exam.end_time.is_(None), Exam.end_time > now))
         .order_by(Exam.created_at.desc())
         .all()
     )
     logger.info(
-        "Student exams fetched; user_id=%s profile=%s/%s/%s rows=%s",
+        "Student exams fetched; user_id=%s active_published_rows=%s",
         user.id,
-        profile.branch,
-        profile.division,
-        profile.semester,
         len(rows),
     )
     exams = []
-    for exam, subject in rows:
-        if subject.branch and subject.branch != profile.branch:
-            continue
-        if subject.division and subject.division != profile.division:
-            continue
-        if subject.semester and subject.semester != profile.semester:
-            continue
+    for exam, subject, teacher in rows:
         attempt = (
             db.query(ExamAttempt)
             .filter(ExamAttempt.exam_id == exam.id, ExamAttempt.student_id == user.id)
@@ -138,6 +126,7 @@ def available_exams(
             "subject_id": subject.id,
             "subject": subject.subject_code,
             "subject_name": subject.subject_name,
+            "teacher_name": teacher.full_name if teacher else "",
             "branch": subject.branch,
             "division": subject.division,
             "semester": subject.semester,

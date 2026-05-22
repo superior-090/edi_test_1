@@ -37,10 +37,6 @@ class _StudentPanelState extends State<StudentPanel> {
 
   Future<void> _loadExams({bool showLoading = true}) async {
     final app = context.read<AppState>();
-    if (!app.isProfileComplete) {
-      setState(() => _loadingExams = false);
-      return;
-    }
     if (showLoading) setState(() => _loadingExams = true);
     try {
       final rows = await app.api.getAvailableExams();
@@ -153,7 +149,7 @@ class _StudentPanelState extends State<StudentPanel> {
         children: [
           SectionTitle(
             title: 'Available Exams',
-            subtitle: 'Published assessments matched to your profile',
+            subtitle: 'All active published assessments',
             action: IconButton.filledTonal(
               tooltip: 'Refresh exams',
               onPressed: _loadExams,
@@ -201,7 +197,7 @@ class _ProfileRequiredPanel extends StatelessWidget {
           const SizedBox(width: 12),
           const Expanded(
             child: Text(
-              'Complete your PRN, branch, division, semester, and year before joining exams.',
+              'Add your profile details for reports and identity records.',
             ),
           ),
           GradientButton(
@@ -389,6 +385,15 @@ class _ExamCardState extends State<_ExamCard> {
   @override
   Widget build(BuildContext context) {
     final app = context.read<AppState>();
+    final subjectName = _text('subject_name', fallback: _text('subject'));
+    final teacherName = _text('teacher_name', fallback: 'Faculty');
+    final duration = (widget.exam['duration_minutes'] as num?)?.toInt() ?? 60;
+    final marks = widget.exam['total_marks']?.toString() ?? '-';
+    final questionCount = widget.exam['question_count']?.toString() ?? '0';
+    final schedule = _formatSchedule(
+      widget.exam['start_time'],
+      widget.exam['end_time'],
+    );
     return GlassCard(
       padding: EdgeInsets.zero,
       borderColor: AiColors.cyan.withValues(alpha: 0.14),
@@ -430,9 +435,16 @@ class _ExamCardState extends State<_ExamCard> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${widget.exam['duration_minutes']} min - ${widget.exam['question_count']} question images',
+                    subjectName,
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$teacherName - $duration min - $marks marks - $questionCount questions',
                     style: const TextStyle(color: Colors.white60),
                   ),
+                  const SizedBox(height: 4),
+                  Text(schedule, style: const TextStyle(color: Colors.white60)),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -470,6 +482,27 @@ class _ExamCardState extends State<_ExamCard> {
         ),
       ),
     );
+  }
+
+  String _text(String key, {String fallback = ''}) {
+    final value = widget.exam[key]?.toString().trim() ?? '';
+    return value.isEmpty ? fallback : value;
+  }
+
+  String _formatSchedule(dynamic start, dynamic end) {
+    final startText = _shortDate(start);
+    final endText = _shortDate(end);
+    if (startText.isEmpty && endText.isEmpty) return 'Open schedule';
+    if (startText.isEmpty) return 'Open until $endText';
+    if (endText.isEmpty) return 'Starts $startText';
+    return '$startText to $endText';
+  }
+
+  String _shortDate(dynamic value) {
+    final text = value?.toString() ?? '';
+    if (text.isEmpty) return '';
+    final cleaned = text.replaceFirst('T', ' ');
+    return cleaned.length > 16 ? cleaned.substring(0, 16) : cleaned;
   }
 
   Future<void> _startExam(BuildContext context, AppState app) async {

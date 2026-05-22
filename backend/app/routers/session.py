@@ -21,7 +21,6 @@ from ..models import (
     QuestionImage,
     Result,
     Session as SessionModel,
-    StudentProfile,
     Subject,
     User,
 )
@@ -205,18 +204,6 @@ async def start_session(
         payload.exam_title = exam.title
         if subject is not None:
             payload.subject = subject.subject_code
-
-    if not is_staff_role(user.role):
-        profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
-        if profile is None or not all([
-            profile.full_name,
-            profile.prn,
-            profile.branch,
-            profile.division,
-            profile.semester,
-            profile.year,
-        ]):
-            raise HTTPException(status_code=409, detail="Complete student profile before joining exams")
 
     try:
         side_camera_url, side_camera_frame = validate_side_camera_url(payload.side_camera_url)
