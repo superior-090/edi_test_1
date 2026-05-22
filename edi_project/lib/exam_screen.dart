@@ -11,6 +11,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'app_state.dart';
 import 'design_system.dart';
 import 'exam_copy_guard.dart';
+import 'side_camera_stream.dart';
 
 void _noop() {}
 
@@ -428,7 +429,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
 
   void _startSideCameraWatchdog() {
     _sideCheckTimer?.cancel();
-    _sideCheckTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+    _sideCheckTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
       if (!_monitoringStarted || _submitting || _checkingSideCamera) return;
       _checkingSideCamera = true;
       try {
@@ -969,10 +970,19 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
           accent: _sideCameraStatus == 'ONLINE'
               ? Colors.greenAccent
               : Colors.cyanAccent,
-          child: _SnapshotFeed(
-            sessionId: _sessionId,
-            side: true,
-            emptyText: 'Side camera connecting',
+          child: SideCameraStreamView(
+            streamUrl: _sideCameraUrl,
+            onConnected: (_) {
+              if (mounted && _sideCameraStatus != 'ONLINE') {
+                setState(() => _sideCameraStatus = 'ONLINE');
+              }
+            },
+            onFailure: (reason) {
+              if (mounted) {
+                setState(() => _sideCameraStatus = 'STREAM_FAILED');
+              }
+              debugPrint('Side camera exam preview failed: $reason');
+            },
           ),
         ),
         const SizedBox(height: 12),
@@ -1116,9 +1126,9 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
           autofocus: true,
           decoration: const InputDecoration(
             labelText: 'Camera URL or IP',
-            hintText: '192.168.0.5 or rtsp://admin:pass@192.168.0.5:8554',
+            hintText: 'http://192.168.0.5:8080/video',
             helperText:
-                'Examples: 192.168.0.5, http://192.168.0.5:8080/video, rtsp://admin:pass@192.168.0.5:8554',
+                'Use an HTTP MJPEG stream such as http://PHONE_IP:8080/video. RTSP is not supported in Flutter Web.',
             prefixIcon: Icon(Icons.settings_input_antenna),
           ),
         ),
@@ -1137,6 +1147,20 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     );
     controller.dispose();
     if (sideIp == null || sideIp.isEmpty || !mounted) return;
+    final streamInfo = resolveSideCameraStream(sideIp);
+    debugPrint('Side camera reconnect attempted URL: ${streamInfo.url}');
+    if (streamInfo.type == SideCameraStreamType.rtspUnsupported) {
+      setState(() => _sideCameraStatus = 'STREAM_FAILED');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'RTSP streams are not supported in Flutter Web. Use http://PHONE_IP:8080/video.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (streamInfo.type == SideCameraStreamType.invalid) return;
     setState(() {
       _sideReconnectBusy = true;
       _sideCameraStatus = 'RETRYING';
@@ -1145,7 +1169,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     try {
       final result = await app.api.reconnectSideCamera(
         sessionId: _sessionId,
-        sideCameraUrl: sideIp,
+        sideCameraUrl: streamInfo.url,
       );
       final success = result['success'] == true;
       setState(() {
@@ -1157,7 +1181,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         final resolvedUrl = result['resolved_url']?.toString() ?? '';
         final usableUrl = resolvedUrl.isNotEmpty
             ? resolvedUrl
-            : result['side_camera_url']?.toString() ?? sideIp;
+            : result['side_camera_url']?.toString() ?? streamInfo.url;
         await app.rememberSideCameraUrl(usableUrl);
         _sideCameraUrl = usableUrl;
         if (mounted && _cameraReady) _startFrameUpload();
@@ -1182,124 +1206,6 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     } finally {
       if (mounted) setState(() => _sideReconnectBusy = false);
     }
-  }
-}
-
-class _SnapshotFeed extends StatefulWidget {
-  const _SnapshotFeed({
-    required this.sessionId,
-    required this.side,
-    required this.emptyText,
-  });
-
-  final String sessionId;
-  final bool side;
-  final String emptyText;
-
-  @override
-  State<_SnapshotFeed> createState() => _SnapshotFeedState();
-}
-
-class _SnapshotFeedState extends State<_SnapshotFeed> {
-  Timer? _timer;
-  int _cacheKey = 0;
-  int _frameRefreshCount = 0;
-  int _reconnectAttempts = 0;
-  bool _hadFrame = false;
-  bool _failed = false;
-  DateTime? _lastFrameAt;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(const Duration(milliseconds: 450), (_) {
-      final lastFrameAt = _lastFrameAt;
-      if (lastFrameAt != null &&
-          DateTime.now().difference(lastFrameAt) > const Duration(seconds: 4)) {
-        _recordReconnect('freeze detected');
-      }
-      _refreshNow();
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final api = context.read<AppState>().api;
-    final url = widget.side
-        ? api.getStudentSideSnapshotUrl(widget.sessionId, _cacheKey)
-        : api.getSnapshotUrl(widget.sessionId, _cacheKey);
-    return Image.network(
-      url,
-      fit: BoxFit.contain,
-      gaplessPlayback: true,
-      webHtmlElementStrategy: kIsWeb
-          ? WebHtmlElementStrategy.prefer
-          : WebHtmlElementStrategy.never,
-      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-        if (frame != null || wasSynchronouslyLoaded) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && (!_hadFrame || _failed)) {
-              setState(() {
-                _hadFrame = true;
-                _failed = false;
-              });
-            }
-            _lastFrameAt = DateTime.now();
-            _frameRefreshCount++;
-            if (_frameRefreshCount == 1 || _frameRefreshCount % 25 == 0) {
-              debugPrint(
-                'Side camera frame refresh count=$_frameRefreshCount '
-                'session=${widget.sessionId}',
-              );
-            }
-          });
-        }
-        return child;
-      },
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        if (_hadFrame && !_failed) return child;
-        return _FeedPlaceholder(
-          text: _hadFrame ? 'Refreshing side camera' : widget.emptyText,
-          loading: true,
-          onRetry: _refreshNow,
-        );
-      },
-      errorBuilder: (context, error, stackTrace) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !_failed) {
-            _recordReconnect('snapshot failed');
-            setState(() => _failed = true);
-          }
-        });
-        return _FeedPlaceholder(
-          text: _hadFrame
-              ? 'Side camera reconnecting'
-              : 'Side camera unavailable',
-          loading: !_hadFrame,
-          onRetry: _refreshNow,
-        );
-      },
-    );
-  }
-
-  void _refreshNow() {
-    if (mounted) setState(() => _cacheKey++);
-  }
-
-  void _recordReconnect(String reason) {
-    _reconnectAttempts++;
-    _lastFrameAt = DateTime.now();
-    debugPrint(
-      'Side camera reconnect attempt=$_reconnectAttempts '
-      'reason=$reason session=${widget.sessionId}',
-    );
   }
 }
 

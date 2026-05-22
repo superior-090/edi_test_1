@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -152,7 +150,7 @@ class _FeedPane extends StatelessWidget {
           ),
           Expanded(
             child: InteractiveViewer(
-              child: _SnapshotFeed(
+              child: _StreamFeed(
                 sessionId: sessionId,
                 side: side,
                 emptyText: '$title not available yet',
@@ -165,8 +163,8 @@ class _FeedPane extends StatelessWidget {
   }
 }
 
-class _SnapshotFeed extends StatefulWidget {
-  const _SnapshotFeed({
+class _StreamFeed extends StatefulWidget {
+  const _StreamFeed({
     required this.sessionId,
     required this.side,
     required this.emptyText,
@@ -177,46 +175,35 @@ class _SnapshotFeed extends StatefulWidget {
   final String emptyText;
 
   @override
-  State<_SnapshotFeed> createState() => _SnapshotFeedState();
+  State<_StreamFeed> createState() => _StreamFeedState();
 }
 
-class _SnapshotFeedState extends State<_SnapshotFeed> {
-  Timer? _timer;
-  int _cacheKey = 0;
+class _StreamFeedState extends State<_StreamFeed> {
   bool _hadFrame = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
-      if (mounted) setState(() => _cacheKey++);
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final api = context.read<AppState>().api;
-    final String url;
-    url = widget.side
-        ? api.getSideSnapshotUrl(widget.sessionId, _cacheKey)
-        : api.getSnapshotUrl(widget.sessionId, _cacheKey);
+    final url = widget.side
+        ? api.getSideStreamUrl(widget.sessionId)
+        : api.getStreamUrl(widget.sessionId);
+    debugPrint('Proctor feed attempted URL: $url');
     return Image.network(
       url,
       fit: BoxFit.contain,
       gaplessPlayback: true,
+      cacheWidth: null,
+      cacheHeight: null,
       webHtmlElementStrategy: kIsWeb
           ? WebHtmlElementStrategy.prefer
           : WebHtmlElementStrategy.never,
       frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
         if (frame != null || wasSynchronouslyLoaded) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && !_hadFrame) setState(() => _hadFrame = true);
+            if (mounted && !_hadFrame) {
+              debugPrint('Proctor feed image load success: $url');
+              setState(() => _hadFrame = true);
+            }
           });
         }
         return child;
@@ -231,9 +218,14 @@ class _SnapshotFeedState extends State<_SnapshotFeed> {
         );
       },
       errorBuilder: (context, error, stackTrace) => Center(
-        child: Text(
-          _hadFrame ? 'Feed reconnecting' : widget.emptyText,
-          textAlign: TextAlign.center,
+        child: Builder(
+          builder: (context) {
+            debugPrint('Proctor feed image load failure: $url; $error');
+            return Text(
+              _hadFrame ? 'Stream unavailable' : widget.emptyText,
+              textAlign: TextAlign.center,
+            );
+          },
         ),
       ),
     );
