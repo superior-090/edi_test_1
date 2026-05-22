@@ -11,13 +11,13 @@ class ApiConfig {
   );
   static const _defaultBaseUrl = String.fromEnvironment(
     'DEFAULT_API_BASE_URL',
-    defaultValue: 'https://edi-3792.onrender.com',
+    defaultValue: '',
   );
 
   static final String baseUrl = _normalizeBaseUrl(
     _configuredApiBaseUrl.isNotEmpty
         ? _configuredApiBaseUrl
-        : (_configuredApiUrl.isNotEmpty ? _configuredApiUrl : _defaultBaseUrl),
+        : (_configuredApiUrl.isNotEmpty ? _configuredApiUrl : _fallbackBaseUrl),
   );
 
   static void logSelectedBackend() {
@@ -46,5 +46,17 @@ class ApiConfig {
 
   static String _normalizeBaseUrl(String value) {
     return value.trim().replaceFirst(RegExp(r'/$'), '');
+  }
+
+  static String get _fallbackBaseUrl {
+    if (_defaultBaseUrl.isNotEmpty) return _defaultBaseUrl;
+    final host = Uri.base.host.toLowerCase();
+    final localWeb = kDebugMode ||
+        host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host.startsWith('192.168.') ||
+        host.startsWith('10.') ||
+        RegExp(r'^172\.(1[6-9]|2\d|3[0-1])\.').hasMatch(host);
+    return localWeb ? 'http://127.0.0.1:8000' : 'https://edi-3792.onrender.com';
   }
 }

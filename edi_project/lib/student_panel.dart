@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'app_state.dart';
+import 'api_config.dart';
 import 'design_system.dart';
 import 'exam_screen.dart';
 import 'side_camera_stream.dart';
@@ -507,6 +508,19 @@ class _ExamCardState extends State<_ExamCard> {
     final testResult = await _showSideCameraInput(context);
     if (testResult == null || !mounted) return;
 
+    final backendReady = await _backendWorks(app);
+    if (!backendReady) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Backend unavailable at ${ApiConfig.baseUrl}. Start the backend, then try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
     final frontCamWorks = await _frontCameraWorks();
     if (!frontCamWorks || !sideCamConnected) {
       if (!mounted) return;
@@ -535,6 +549,17 @@ class _ExamCardState extends State<_ExamCard> {
         ),
       ),
     );
+  }
+
+  Future<bool> _backendWorks(AppState app) async {
+    try {
+      final health = await app.api.health();
+      debugPrint('Backend health OK: $health');
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint('Backend health failed: $error\n$stackTrace');
+      return false;
+    }
   }
 
   Future<bool> _frontCameraWorks() async {
