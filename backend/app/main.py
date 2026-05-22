@@ -22,8 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-Base.metadata.create_all(bind=engine)
-
 
 def ensure_schema():
     additions = {
@@ -39,10 +37,6 @@ def ensure_schema():
         for column, definition in additions.items():
             if column not in existing:
                 connection.execute(text(f"ALTER TABLE sessions ADD COLUMN {column} {definition}"))
-
-
-ensure_schema()
-
 
 def seed_users():
     defaults = [
@@ -146,7 +140,6 @@ def seed_users():
     finally:
         db.close()
 
-seed_users()
 
 app.include_router(auth.router)
 app.include_router(session.router)
@@ -154,6 +147,14 @@ app.include_router(student.router)
 app.include_router(proctor.router)
 app.include_router(admin.router)
 app.include_router(teacher.router)
+
+
+@app.on_event("startup")
+def startup():
+    Base.metadata.create_all(bind=engine)
+    ensure_schema()
+    seed_users()
+
 
 @app.get("/")
 def root(db: Session = Depends(get_db)):

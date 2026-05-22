@@ -6,19 +6,12 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 load_dotenv()
 
-configured_database_url = os.getenv("DATABASE_URL", "").strip()
-if configured_database_url.startswith("postgres://"):
-    configured_database_url = configured_database_url.replace("postgres://", "postgresql://", 1)
-
-use_external_database = (
-    os.getenv("APP_ENV") == "production"
-    or os.getenv("RENDER") is not None
-    or os.getenv("PROCTORAI_USE_DATABASE_URL") == "true"
-)
-DATABASE_URL = configured_database_url if configured_database_url and use_external_database else "sqlite:///./proctorai.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip() or "sqlite:///./proctorai.db"
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
