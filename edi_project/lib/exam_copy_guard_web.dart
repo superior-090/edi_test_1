@@ -1,11 +1,15 @@
-// ignore: avoid_web_libraries_in_flutter
-import 'dart:html' as html;
-import 'dart:js_util' as js_util;
+import 'dart:js_interop';
 
 void enableExamCopyGuard() {
-  js_util.callMethod(html.window, 'proctorExamGuardEnable', const []);
+  _enableExamCopyGuard();
 }
 
 void disableExamCopyGuard() {
-  js_util.callMethod(html.window, 'proctorExamGuardDisable', const []);
+  _disableExamCopyGuard();
 }
+
+@JS('proctorExamGuardEnable')
+external void _enableExamCopyGuard();
+
+@JS('proctorExamGuardDisable')
+external void _disableExamCopyGuard();

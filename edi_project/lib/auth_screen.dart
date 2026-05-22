@@ -473,10 +473,15 @@ class _AuthForm extends StatelessWidget {
             loading: loading,
           ),
           const SizedBox(height: 14),
-          const Text(
+          Text(
             'Demo: candidate/student123, teacher/teacher123, proctor/proctor123',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white45, fontSize: 12),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurface.withValues(
+                    alpha: 0.45,
+                  ),
+              fontSize: 12,
+            ),
           ),
         ],
       ),
