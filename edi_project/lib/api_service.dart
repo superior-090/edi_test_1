@@ -130,13 +130,16 @@ class ApiService {
       http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
     );
 
-    final streamed = await request.send().timeout(const Duration(seconds: 12));
+    final streamed = await request.send().timeout(const Duration(seconds: 5));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
       return jsonDecode(body) as Map<String, dynamic>;
     }
     throw ApiException(_errorMessage(body), streamed.statusCode);
   }
+
+  Uri frameUploadUri(String sessionId) =>
+      _uri('/proctor/upload-frame', {'session_id': sessionId});
 
   Future<List<Map<String, dynamic>>> getQuestionImages({
     int? examId,
@@ -732,6 +735,9 @@ class ApiService {
 
   String getSnapshotUrl(String sessionId, int cacheKey) =>
       '$baseUrl/admin/snapshot/$sessionId?t=$cacheKey';
+
+  String getFrontRawSnapshotUrl(String sessionId, int cacheKey) =>
+      '$baseUrl/admin/snapshot/$sessionId/front-raw?t=$cacheKey';
 
   String getSideSnapshotUrl(String sessionId, int cacheKey) =>
       '$baseUrl/admin/snapshot/$sessionId/side?t=$cacheKey';

@@ -32,6 +32,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   int? _subjectFilter;
   int _resultSortIndex = 0;
   bool _resultAscending = true;
+  Map<String, dynamic>? _questionManagerExam;
 
   @override
   void initState() {
@@ -380,7 +381,10 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   }
 
   Future<({Map<String, dynamic> payload, PickedQuestionImage? image})?>
-  _openQuestionEditor([Map<String, dynamic>? question]) async {
+  _openQuestionEditor(
+    BuildContext parentContext, [
+    Map<String, dynamic>? question,
+  ]) async {
     final text = TextEditingController(
       text: question?['question_text']?.toString() ?? '',
     );
@@ -402,11 +406,16 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
     final explanation = TextEditingController(
       text: question?['explanation']?.toString() ?? '',
     );
-    var correct = question?['correct_option']?.toString() ?? 'A';
+    var correct = (question?['correct_option']?.toString() ?? 'A')
+        .toUpperCase();
+    if (!{'A', 'B', 'C', 'D'}.contains(correct)) {
+      correct = 'A';
+    }
     PickedQuestionImage? selectedImage;
     final formKey = GlobalKey<FormState>();
     final saved = await showDialog<bool>(
-      context: context,
+      context: parentContext,
+      useRootNavigator: false,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           title: Text(question == null ? 'Add MCQ' : 'Edit MCQ'),
@@ -469,20 +478,29 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
                     Row(
                       children: [
                         Expanded(
-                          child: DropdownButtonFormField<String>(
-                            initialValue: correct.toUpperCase(),
-                            decoration: const InputDecoration(
-                              labelText: 'Correct option',
-                              prefixIcon: Icon(Icons.check_circle),
-                            ),
-                            items: const [
-                              DropdownMenuItem(value: 'A', child: Text('A')),
-                              DropdownMenuItem(value: 'B', child: Text('B')),
-                              DropdownMenuItem(value: 'C', child: Text('C')),
-                              DropdownMenuItem(value: 'D', child: Text('D')),
-                            ],
-                            onChanged: (value) => setDialogState(
-                              () => correct = value ?? correct,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Correct option',
+                                prefixIcon: Icon(Icons.check_circle),
+                              ),
+                              child: SegmentedButton<String>(
+                                segments: const [
+                                  ButtonSegment(value: 'A', label: Text('A')),
+                                  ButtonSegment(value: 'B', label: Text('B')),
+                                  ButtonSegment(value: 'C', label: Text('C')),
+                                  ButtonSegment(value: 'D', label: Text('D')),
+                                ],
+                                selected: {correct.toUpperCase()},
+                                onSelectionChanged: (selection) {
+                                  if (selection.isEmpty) return;
+                                  setDialogState(
+                                    () => correct = selection.first,
+                                  );
+                                },
+                                showSelectedIcon: false,
+                              ),
                             ),
                           ),
                         ),
@@ -499,7 +517,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
                     OutlinedButton.icon(
                       onPressed: () async {
                         final image = await pickQuestionImage();
-                        if (image != null) {
+                        if (image != null && context.mounted) {
                           setDialogState(() => selectedImage = image);
                         }
                       },
@@ -538,8 +556,9 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             ),
             FilledButton(
               onPressed: () {
-                if (formKey.currentState!.validate())
+                if (formKey.currentState?.validate() == true) {
                   Navigator.pop(context, true);
+                }
               },
               child: const Text('Save question'),
             ),
@@ -578,205 +597,235 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
 
   Future<void> _openQuestions(Map<String, dynamic> exam) async {
     final examId = (exam['id'] as num).toInt();
-    var questions = await _api.getTeacherQuestions(examId);
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          Future<void> refresh() async {
-            final rows = await _api.getTeacherQuestions(examId);
-            if (dialogContext.mounted) setDialogState(() => questions = rows);
-          }
+    var reopenQuestions = true;
 
-          Future<void> save([Map<String, dynamic>? question]) async {
-            final edited = await _openQuestionEditor(question);
-            if (edited == null) return;
-            try {
-              Map<String, dynamic> savedQuestion;
-              if (question == null) {
-                savedQuestion = await _api.createTeacherQuestion(
-                  examId,
-                  edited.payload,
-                );
-              } else {
-                savedQuestion = await _api.updateTeacherQuestion(
-                  (question['id'] as num).toInt(),
-                  edited.payload,
-                );
-              }
-              if (edited.image != null) {
-                await _api.uploadTeacherQuestionImage(
-                  questionId: (savedQuestion['id'] as num).toInt(),
-                  image: QuestionImageUpload(
-                    bytes: edited.image!.bytes,
-                    filename: edited.image!.name,
-                    contentType: edited.image!.contentType,
-                  ),
-                );
-              }
-              await refresh();
-              if (dialogContext.mounted) {
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      question == null
-                          ? 'Question added.'
-                          : 'Question updated.',
-                    ),
-                  ),
-                );
-              }
-            } catch (error) {
-              _showError('Question save failed: $error');
-            }
-          }
+    while (mounted && reopenQuestions) {
+      reopenQuestions = false;
+      var questions = await _api.getTeacherQuestions(examId);
+      if (!mounted) return;
 
-          Future<void> move(int index, int delta) async {
-            final target = index + delta;
-            if (target < 0 || target >= questions.length) return;
-            final moved = [...questions];
-            final item = moved.removeAt(index);
-            moved.insert(target, item);
-            setDialogState(() => questions = moved);
-            try {
-              await _api.reorderTeacherQuestions(examId, [
-                for (final row in moved) (row['id'] as num).toInt(),
-              ]);
-              await refresh();
-            } catch (error) {
-              _showError('Question reorder failed: $error');
-              await refresh();
-            }
-          }
+      var openEditor = false;
+      Map<String, dynamic>? editorQuestion;
 
-          Future<void> upload(Map<String, dynamic> question) async {
-            final image = await pickQuestionImage();
-            if (image == null) return;
-            try {
-              await _api.uploadTeacherQuestionImage(
-                questionId: (question['id'] as num).toInt(),
-                image: QuestionImageUpload(
-                  bytes: image.bytes,
-                  filename: image.name,
-                  contentType: image.contentType,
-                ),
-              );
-              await refresh();
-            } catch (error) {
-              _showError('Question image upload failed: $error');
-            }
+      Future<void> saveEditorResult(
+        Map<String, dynamic>? question,
+        ({Map<String, dynamic> payload, PickedQuestionImage? image}) edited,
+      ) async {
+        try {
+          Map<String, dynamic> savedQuestion;
+          if (question == null) {
+            savedQuestion = await _api.createTeacherQuestion(
+              examId,
+              edited.payload,
+            );
+          } else {
+            savedQuestion = await _api.updateTeacherQuestion(
+              (question['id'] as num).toInt(),
+              edited.payload,
+            );
           }
-
-          Future<void> remove(Map<String, dynamic> question) async {
-            try {
-              await _api.deleteTeacherQuestion((question['id'] as num).toInt());
-              await refresh();
-            } catch (error) {
-              _showError('Question delete failed: $error');
-            }
+          if (edited.image != null) {
+            await _api.uploadTeacherQuestionImage(
+              questionId: (savedQuestion['id'] as num).toInt(),
+              image: QuestionImageUpload(
+                bytes: edited.image!.bytes,
+                filename: edited.image!.name,
+                contentType: edited.image!.contentType,
+              ),
+            );
           }
-
-          return AlertDialog(
-            title: Text('MCQ Questions - ${exam['title']}'),
-            content: SizedBox(
-              width: 900,
-              height: 560,
-              child: questions.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const _EmptyState(
-                            icon: Icons.quiz_outlined,
-                            text: 'No questions added yet',
-                          ),
-                          const SizedBox(height: 12),
-                          FilledButton.icon(
-                            onPressed: () => save(),
-                            icon: const Icon(Icons.add),
-                            label: const Text('Add question'),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.separated(
-                      itemCount: questions.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final question = questions[index];
-                        return Card(
-                          child: ListTile(
-                            leading: CircleAvatar(child: Text('${index + 1}')),
-                            title: Text(
-                              question['question_text']?.toString() ?? '',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              'Correct ${question['correct_option']} - ${question['marks']} marks'
-                              '${(question['question_image'] ?? '').toString().isNotEmpty ? ' - image attached' : ''}',
-                            ),
-                            trailing: Wrap(
-                              spacing: 2,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Move up',
-                                  onPressed: index == 0
-                                      ? null
-                                      : () => move(index, -1),
-                                  icon: const Icon(Icons.arrow_upward),
-                                ),
-                                IconButton(
-                                  tooltip: 'Move down',
-                                  onPressed: index == questions.length - 1
-                                      ? null
-                                      : () => move(index, 1),
-                                  icon: const Icon(Icons.arrow_downward),
-                                ),
-                                IconButton(
-                                  tooltip: 'Attach image',
-                                  onPressed: () => upload(question),
-                                  icon: const Icon(Icons.image),
-                                ),
-                                IconButton(
-                                  tooltip: 'Edit',
-                                  onPressed: () => save(question),
-                                  icon: const Icon(Icons.edit),
-                                ),
-                                IconButton(
-                                  tooltip: 'Delete',
-                                  onPressed: () => remove(question),
-                                  icon: const Icon(Icons.delete),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                question == null ? 'Question added.' : 'Question updated.',
+              ),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              ),
-              OutlinedButton.icon(
-                onPressed: () => _openQuestionImages(exam),
-                icon: const Icon(Icons.upload_file),
-                label: const Text('Legacy screenshots'),
-              ),
-              FilledButton.icon(
-                onPressed: () => save(),
-                icon: const Icon(Icons.add),
-                label: const Text('Add question'),
-              ),
-            ],
           );
-        },
-      ),
-    );
+        } catch (error) {
+          _showError('Question save failed: $error');
+        }
+      }
+
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            Future<void> refresh() async {
+              final rows = await _api.getTeacherQuestions(examId);
+              if (dialogContext.mounted) {
+                setDialogState(() => questions = rows);
+              }
+            }
+
+            void openQuestionEditor([Map<String, dynamic>? question]) {
+              openEditor = true;
+              editorQuestion = question;
+              Navigator.pop(dialogContext);
+            }
+
+            Future<void> move(int index, int delta) async {
+              final target = index + delta;
+              if (target < 0 || target >= questions.length) return;
+              final moved = [...questions];
+              final item = moved.removeAt(index);
+              moved.insert(target, item);
+              setDialogState(() => questions = moved);
+              try {
+                await _api.reorderTeacherQuestions(examId, [
+                  for (final row in moved) (row['id'] as num).toInt(),
+                ]);
+                await refresh();
+              } catch (error) {
+                _showError('Question reorder failed: $error');
+                await refresh();
+              }
+            }
+
+            Future<void> upload(Map<String, dynamic> question) async {
+              final image = await pickQuestionImage();
+              if (image == null) return;
+              try {
+                await _api.uploadTeacherQuestionImage(
+                  questionId: (question['id'] as num).toInt(),
+                  image: QuestionImageUpload(
+                    bytes: image.bytes,
+                    filename: image.name,
+                    contentType: image.contentType,
+                  ),
+                );
+                await refresh();
+              } catch (error) {
+                _showError('Question image upload failed: $error');
+              }
+            }
+
+            Future<void> remove(Map<String, dynamic> question) async {
+              try {
+                await _api.deleteTeacherQuestion(
+                  (question['id'] as num).toInt(),
+                );
+                await refresh();
+              } catch (error) {
+                _showError('Question delete failed: $error');
+              }
+            }
+
+            return AlertDialog(
+              title: Text('MCQ Questions - ${exam['title']}'),
+              content: SizedBox(
+                width: 900,
+                height: 560,
+                child: questions.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const _EmptyState(
+                              icon: Icons.quiz_outlined,
+                              text: 'No questions added yet',
+                            ),
+                            const SizedBox(height: 12),
+                            FilledButton.icon(
+                              onPressed: () => openQuestionEditor(),
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add question'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: questions.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final question = questions[index];
+                          return Card(
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                child: Text('${index + 1}'),
+                              ),
+                              title: Text(
+                                question['question_text']?.toString() ?? '',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                'Correct ${question['correct_option']} - ${question['marks']} marks'
+                                '${(question['question_image'] ?? '').toString().isNotEmpty ? ' - image attached' : ''}',
+                              ),
+                              trailing: Wrap(
+                                spacing: 2,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Move up',
+                                    onPressed: index == 0
+                                        ? null
+                                        : () => move(index, -1),
+                                    icon: const Icon(Icons.arrow_upward),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Move down',
+                                    onPressed: index == questions.length - 1
+                                        ? null
+                                        : () => move(index, 1),
+                                    icon: const Icon(Icons.arrow_downward),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Attach image',
+                                    onPressed: () => upload(question),
+                                    icon: const Icon(Icons.image),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Edit',
+                                    onPressed: () =>
+                                        openQuestionEditor(question),
+                                    icon: const Icon(Icons.edit),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Delete',
+                                    onPressed: () => remove(question),
+                                    icon: const Icon(Icons.delete),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _openQuestionImages(exam),
+                  icon: const Icon(Icons.upload_file),
+                  label: const Text('Legacy screenshots'),
+                ),
+                FilledButton.icon(
+                  onPressed: () => openQuestionEditor(),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add question'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+
+      if (openEditor && mounted) {
+        await Future<void>.delayed(Duration.zero);
+        if (!mounted) return;
+        final edited = await _openQuestionEditor(context, editorQuestion);
+        if (edited != null) {
+          await saveEditorResult(editorQuestion, edited);
+        }
+        reopenQuestions = true;
+      }
+    }
+
     if (mounted) await _loadCurrentTab(showLoading: false);
   }
 
@@ -927,8 +976,15 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   }
 
   void _selectTab(_TeacherTab tab) {
-    setState(() => _tab = tab);
+    setState(() {
+      _tab = tab;
+      _questionManagerExam = null;
+    });
     _loadCurrentTab();
+  }
+
+  void _showQuestionManager(Map<String, dynamic> exam) {
+    setState(() => _questionManagerExam = Map<String, dynamic>.from(exam));
   }
 
   @override
@@ -982,18 +1038,30 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
   }
 
   Widget _buildContent() {
+    final questionManagerExam = _questionManagerExam;
     return Stack(
       children: [
         Padding(
           padding: const EdgeInsets.all(18),
-          child: switch (_tab) {
-            _TeacherTab.dashboard => _buildDashboard(),
-            _TeacherTab.subjects => _buildSubjects(),
-            _TeacherTab.exams => _buildExams(),
-            _TeacherTab.students => _buildStudents(),
-            _TeacherTab.results => _buildResults(),
-            _TeacherTab.violations => _buildViolations(),
-          },
+          child: questionManagerExam != null
+              ? _TeacherQuestionManager(
+                  exam: questionManagerExam,
+                  api: _api,
+                  onBack: () async {
+                    setState(() => _questionManagerExam = null);
+                    await _loadCurrentTab(showLoading: false);
+                  },
+                  onChanged: () => _loadCurrentTab(showLoading: false),
+                  onError: _showError,
+                )
+              : switch (_tab) {
+                  _TeacherTab.dashboard => _buildDashboard(),
+                  _TeacherTab.subjects => _buildSubjects(),
+                  _TeacherTab.exams => _buildExams(),
+                  _TeacherTab.students => _buildStudents(),
+                  _TeacherTab.results => _buildResults(),
+                  _TeacherTab.violations => _buildViolations(),
+                },
         ),
         if (_busy)
           const Positioned.fill(
@@ -1165,7 +1233,7 @@ class _TeacherDashboardState extends State<TeacherDashboard> {
             (exam) => _ExamManageTile(
               exam: exam,
               onEdit: () => _openExamDialog(exam),
-              onUpload: () => _openQuestions(exam),
+              onUpload: () => _showQuestionManager(exam),
               onDelete: () => _deleteExam(exam),
               onTogglePublish: () async {
                 final published = exam['is_published'] != true;
@@ -1571,7 +1639,7 @@ class _ExamTile extends StatelessWidget {
         leading: CircleAvatar(child: Text('${exam['subject_code'] ?? '-'}')),
         title: Text('${exam['title']}'),
         subtitle: Text(
-          '${exam['duration_minutes']} min - ${exam['question_count']} images',
+          '${exam['duration_minutes']} min - ${exam['question_count']} questions',
         ),
         trailing: _PublishBadge(published: exam['is_published'] == true),
       ),
@@ -1612,7 +1680,7 @@ class _ExamManageTile extends StatelessWidget {
                     style: const TextStyle(fontWeight: FontWeight.w900),
                   ),
                   Text(
-                    '${exam['subject_name']} - ${exam['duration_minutes']} min - ${exam['question_count']} images',
+                    '${exam['subject_name']} - ${exam['duration_minutes']} min - ${exam['question_count']} questions',
                     style: const TextStyle(color: Colors.white60),
                   ),
                 ],
@@ -1640,6 +1708,471 @@ class _ExamManageTile extends StatelessWidget {
               icon: const Icon(Icons.delete),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TeacherQuestionManager extends StatefulWidget {
+  const _TeacherQuestionManager({
+    required this.exam,
+    required this.api,
+    required this.onBack,
+    required this.onChanged,
+    required this.onError,
+  });
+
+  final Map<String, dynamic> exam;
+  final ApiService api;
+  final Future<void> Function() onBack;
+  final Future<void> Function() onChanged;
+  final ValueChanged<String> onError;
+
+  @override
+  State<_TeacherQuestionManager> createState() =>
+      _TeacherQuestionManagerState();
+}
+
+class _TeacherQuestionManagerState extends State<_TeacherQuestionManager> {
+  final _formKey = GlobalKey<FormState>();
+  final _text = TextEditingController();
+  final _optionA = TextEditingController();
+  final _optionB = TextEditingController();
+  final _optionC = TextEditingController();
+  final _optionD = TextEditingController();
+  final _marks = TextEditingController(text: '1');
+  final _explanation = TextEditingController();
+
+  List<Map<String, dynamic>> _questions = [];
+  Map<String, dynamic>? _editingQuestion;
+  PickedQuestionImage? _selectedImage;
+  String _correct = 'A';
+  bool _loading = true;
+  bool _saving = false;
+
+  int get _examId => (widget.exam['id'] as num).toInt();
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    _optionA.dispose();
+    _optionB.dispose();
+    _optionC.dispose();
+    _optionD.dispose();
+    _marks.dispose();
+    _explanation.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _loading = true);
+    try {
+      final rows = await widget.api.getTeacherQuestions(_examId);
+      if (!mounted) return;
+      setState(() {
+        _questions = [
+          for (final row in rows) Map<String, dynamic>.from(row),
+        ];
+      });
+    } catch (error) {
+      widget.onError('Questions refresh failed: $error');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _startAdd() {
+    setState(() {
+      _editingQuestion = null;
+      _selectedImage = null;
+      _correct = 'A';
+      _text.clear();
+      _optionA.clear();
+      _optionB.clear();
+      _optionC.clear();
+      _optionD.clear();
+      _marks.text = '1';
+      _explanation.clear();
+    });
+  }
+
+  void _startEdit(Map<String, dynamic> question) {
+    var correct = (question['correct_option']?.toString() ?? 'A')
+        .toUpperCase();
+    if (!{'A', 'B', 'C', 'D'}.contains(correct)) correct = 'A';
+    setState(() {
+      _editingQuestion = question;
+      _selectedImage = null;
+      _correct = correct;
+      _text.text = question['question_text']?.toString() ?? '';
+      _optionA.text = question['option_a']?.toString() ?? '';
+      _optionB.text = question['option_b']?.toString() ?? '';
+      _optionC.text = question['option_c']?.toString() ?? '';
+      _optionD.text = question['option_d']?.toString() ?? '';
+      _marks.text = question['marks']?.toString() ?? '1';
+      _explanation.text = question['explanation']?.toString() ?? '';
+    });
+  }
+
+  Future<void> _save() async {
+    if (_formKey.currentState?.validate() != true) return;
+    setState(() => _saving = true);
+    final payload = {
+      'question_text': _text.text.trim(),
+      'option_a': _optionA.text.trim(),
+      'option_b': _optionB.text.trim(),
+      'option_c': _optionC.text.trim(),
+      'option_d': _optionD.text.trim(),
+      'correct_option': _correct,
+      'marks': double.tryParse(_marks.text.trim()) ?? 1,
+      'explanation': _explanation.text.trim(),
+    };
+    try {
+      final editing = _editingQuestion;
+      final savedQuestion = editing == null
+          ? await widget.api.createTeacherQuestion(_examId, payload)
+          : await widget.api.updateTeacherQuestion(
+              (editing['id'] as num).toInt(),
+              payload,
+            );
+      if (_selectedImage != null) {
+        await widget.api.uploadTeacherQuestionImage(
+          questionId: (savedQuestion['id'] as num).toInt(),
+          image: QuestionImageUpload(
+            bytes: _selectedImage!.bytes,
+            filename: _selectedImage!.name,
+            contentType: _selectedImage!.contentType,
+          ),
+        );
+      }
+      if (!mounted) return;
+      _startAdd();
+      await _refresh();
+      await widget.onChanged();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            editing == null ? 'Question added.' : 'Question updated.',
+          ),
+        ),
+      );
+    } catch (error) {
+      widget.onError('Question save failed: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _move(int index, int delta) async {
+    final target = index + delta;
+    if (target < 0 || target >= _questions.length) return;
+    final moved = [..._questions];
+    final item = moved.removeAt(index);
+    moved.insert(target, item);
+    setState(() => _questions = moved);
+    try {
+      await widget.api.reorderTeacherQuestions(_examId, [
+        for (final row in moved) (row['id'] as num).toInt(),
+      ]);
+      await _refresh();
+      await widget.onChanged();
+    } catch (error) {
+      widget.onError('Question reorder failed: $error');
+      await _refresh();
+    }
+  }
+
+  Future<void> _attachImage(Map<String, dynamic> question) async {
+    final image = await pickQuestionImage();
+    if (image == null) return;
+    try {
+      await widget.api.uploadTeacherQuestionImage(
+        questionId: (question['id'] as num).toInt(),
+        image: QuestionImageUpload(
+          bytes: image.bytes,
+          filename: image.name,
+          contentType: image.contentType,
+        ),
+      );
+      await _refresh();
+    } catch (error) {
+      widget.onError('Question image upload failed: $error');
+    }
+  }
+
+  Future<void> _delete(Map<String, dynamic> question) async {
+    try {
+      await widget.api.deleteTeacherQuestion((question['id'] as num).toInt());
+      await _refresh();
+      await widget.onChanged();
+    } catch (error) {
+      widget.onError('Question delete failed: $error');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        Row(
+          children: [
+            IconButton(
+              tooltip: 'Back to exams',
+              onPressed: _saving ? null : () => widget.onBack(),
+              icon: const Icon(Icons.arrow_back),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Questions - ${widget.exam['title']}',
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w900),
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: _saving ? null : _startAdd,
+              icon: const Icon(Icons.add),
+              label: const Text('New question'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _buildForm(),
+        const SizedBox(height: 14),
+        if (_loading)
+          const Padding(
+            padding: EdgeInsets.all(48),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (_questions.isEmpty)
+          const _EmptyState(
+            icon: Icons.quiz_outlined,
+            text: 'No questions added yet',
+          )
+        else
+          ...[
+            for (var i = 0; i < _questions.length; i++)
+              _buildQuestionTile(_questions[i], i),
+          ],
+      ],
+    );
+  }
+
+  Widget _buildForm() {
+    final editing = _editingQuestion != null;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                editing ? 'Edit question' : 'Add question',
+                style: const TextStyle(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _text,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Question text',
+                  prefixIcon: Icon(Icons.quiz),
+                ),
+                validator: (value) =>
+                    value == null || value.trim().isEmpty ? 'Required' : null,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DialogField(
+                      controller: _optionA,
+                      label: 'Option A',
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _DialogField(
+                      controller: _optionB,
+                      label: 'Option B',
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _DialogField(
+                      controller: _optionC,
+                      label: 'Option C',
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _DialogField(
+                      controller: _optionD,
+                      label: 'Option D',
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Correct option',
+                          prefixIcon: Icon(Icons.check_circle),
+                        ),
+                        child: SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(value: 'A', label: Text('A')),
+                            ButtonSegment(value: 'B', label: Text('B')),
+                            ButtonSegment(value: 'C', label: Text('C')),
+                            ButtonSegment(value: 'D', label: Text('D')),
+                          ],
+                          selected: {_correct},
+                          onSelectionChanged: (selection) {
+                            if (selection.isEmpty) return;
+                            setState(() => _correct = selection.first);
+                          },
+                          showSelectedIcon: false,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _DialogField(
+                      controller: _marks,
+                      label: 'Marks',
+                      numeric: true,
+                    ),
+                  ),
+                ],
+              ),
+              OutlinedButton.icon(
+                onPressed: _saving
+                    ? null
+                    : () async {
+                        final image = await pickQuestionImage();
+                        if (image != null && mounted) {
+                          setState(() => _selectedImage = image);
+                        }
+                      },
+                icon: const Icon(Icons.image),
+                label: Text(
+                  _selectedImage?.name ??
+                      (editing &&
+                              (_editingQuestion?['question_image'] ?? '')
+                                  .toString()
+                                  .isNotEmpty
+                          ? 'Replace image'
+                          : 'Upload image'),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _explanation,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Explanation shown after submission',
+                  prefixIcon: Icon(Icons.notes),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _saving ? null : _startAdd,
+                    child: const Text('Clear'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save),
+                    label: Text(editing ? 'Update question' : 'Save question'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuestionTile(Map<String, dynamic> question, int index) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        child: ListTile(
+          leading: CircleAvatar(child: Text('${index + 1}')),
+          title: Text(
+            question['question_text']?.toString() ?? '',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            'Correct ${question['correct_option']} - ${question['marks']} marks'
+            '${(question['question_image'] ?? '').toString().isNotEmpty ? ' - image attached' : ''}',
+          ),
+          trailing: Wrap(
+            spacing: 2,
+            children: [
+              IconButton(
+                tooltip: 'Move up',
+                onPressed: index == 0 ? null : () => _move(index, -1),
+                icon: const Icon(Icons.arrow_upward),
+              ),
+              IconButton(
+                tooltip: 'Move down',
+                onPressed: index == _questions.length - 1
+                    ? null
+                    : () => _move(index, 1),
+                icon: const Icon(Icons.arrow_downward),
+              ),
+              IconButton(
+                tooltip: 'Attach image',
+                onPressed: () => _attachImage(question),
+                icon: const Icon(Icons.image),
+              ),
+              IconButton(
+                tooltip: 'Edit',
+                onPressed: () => _startEdit(question),
+                icon: const Icon(Icons.edit),
+              ),
+              IconButton(
+                tooltip: 'Delete',
+                onPressed: () => _delete(question),
+                icon: const Icon(Icons.delete),
+              ),
+            ],
+          ),
         ),
       ),
     );

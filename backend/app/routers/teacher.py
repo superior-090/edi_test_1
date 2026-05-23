@@ -216,12 +216,14 @@ def _result_rows(
     if division:
         query = query.filter(StudentProfile.division == division)
     rows = []
+    seen_result_keys = set()
     normalized_search = (search or "").strip().lower()
     for result, user, profile, exam, subject in query.order_by(Result.submitted_at.desc()).all():
         name = profile.full_name if profile else user.full_name
         prn = profile.prn if profile else ""
         if normalized_search and normalized_search not in f"{name} {prn} {user.username}".lower():
             continue
+        seen_result_keys.add((user.username, exam.id))
         total = exam.total_marks or 0
         percentage = (result.score / total * 100) if total else 0
         rows.append(ResultOut(
@@ -245,6 +247,50 @@ def _result_rows(
             violation_count=result.violation_count,
             status=result.status,
         ).model_dump(mode="json"))
+
+    submitted_sessions = (
+        db.query(SessionModel, User, StudentProfile, Exam, Subject)
+        .join(Exam, SessionModel.exam_id == Exam.id)
+        .join(Subject, Exam.subject_id == Subject.id)
+        .join(User, SessionModel.student_id == User.username)
+        .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+        .filter(Exam.teacher_id == teacher_id, SessionModel.is_submitted == True)
+    )
+    if subject_id:
+        submitted_sessions = submitted_sessions.filter(Subject.id == subject_id)
+    if branch:
+        submitted_sessions = submitted_sessions.filter(StudentProfile.branch == branch)
+    if division:
+        submitted_sessions = submitted_sessions.filter(StudentProfile.division == division)
+    for session, user, profile, exam, subject in submitted_sessions.order_by(SessionModel.submitted_at.desc()).all():
+        if (session.student_id, exam.id) in seen_result_keys:
+            continue
+        name = profile.full_name if profile else user.full_name
+        prn = profile.prn if profile else ""
+        if normalized_search and normalized_search not in f"{name} {prn} {user.username}".lower():
+            continue
+        total = exam.total_marks or 0
+        rows.append(ResultOut(
+            id=0,
+            student_id=user.id,
+            exam_id=exam.id,
+            student_name=name,
+            prn=prn,
+            branch=profile.branch if profile else "",
+            division=profile.division if profile else "",
+            semester=profile.semester if profile else "",
+            year=profile.year if profile else "",
+            subject=subject.subject_name,
+            subject_code=subject.subject_code,
+            exam_title=exam.title,
+            marks=0,
+            total_marks=total,
+            percentage=0,
+            submitted_at=session.submitted_at,
+            ai_suspicion_score=session.cheat_score,
+            violation_count=db.query(Event).filter(Event.session_id == session.session_id).count(),
+            status="SUBMITTED",
+        ).model_dump(mode="json"))
     return rows
 
 
@@ -255,12 +301,19 @@ def dashboard_summary(
 ):
     teacher = _teacher_profile(db, user)
     exam_ids = _teacher_exam_ids(db, teacher.id)
+    result_count = db.query(Result).filter(Result.exam_id.in_(exam_ids)).count() if exam_ids else 0
+    submitted_session_count = (
+        db.query(SessionModel)
+        .filter(SessionModel.exam_id.in_(exam_ids), SessionModel.is_submitted == True)
+        .count()
+        if exam_ids else 0
+    )
     return TeacherDashboardStats(
         subjects=db.query(Subject).filter(Subject.created_by_teacher_id == teacher.id).count(),
         exams=len(exam_ids),
         published_exams=db.query(Exam).filter(Exam.teacher_id == teacher.id, Exam.is_published == True).count(),
         students=db.query(StudentProfile).count(),
-        results=db.query(Result).filter(Result.exam_id.in_(exam_ids)).count() if exam_ids else 0,
+        results=max(result_count, submitted_session_count),
         violations=(
             db.query(Event)
             .join(SessionModel, Event.session_id == SessionModel.session_id)

@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from .database import engine
-from .models import Base, Exam, Session as ExamSession, Subject, Teacher, User
+from .models import Base, Exam, Question, Session as ExamSession, Subject, Teacher, User
 from .routers import admin, auth, proctor, session, student, teacher
 from .security import get_db, hash_password
 
@@ -180,6 +180,42 @@ def seed_users():
                     ),
                 ])
                 db.commit()
+
+            demo_exams = db.query(Exam).filter(Exam.teacher_id == teacher_profile.id).all()
+            for exam in demo_exams:
+                if db.query(Question).filter(Question.exam_id == exam.id).count() > 0:
+                    continue
+                if exam.title == "Computer Science 101":
+                    demo_questions = [
+                        ("Which algorithm is supervised learning?", "K-Means", "Linear Regression", "PCA", "Association Rules", "B"),
+                        ("Which layer secures HTTPS traffic?", "Transport", "Presentation", "Network", "Physical", "A"),
+                        ("What does a confusion matrix summarize?", "Disk usage", "Model predictions", "Network packets", "CPU scheduling", "B"),
+                    ]
+                elif exam.title == "AI and Ethics":
+                    demo_questions = [
+                        ("Which issue is a fairness concern in AI?", "Biased training data", "Faster storage", "High refresh rate", "Extra RAM", "A"),
+                        ("What should an explainable AI system provide?", "Opaque outputs", "Reasons for decisions", "Random answers", "Hidden logs", "B"),
+                        ("Which practice protects student data?", "Sharing raw records", "Data minimization", "Public passwords", "Unrestricted exports", "B"),
+                    ]
+                else:
+                    demo_questions = [
+                        ("What is phishing?", "A social engineering attack", "A compiler phase", "A sorting method", "A database index", "A"),
+                        ("Which password is strongest?", "12345678", "password", "Riv3r!Cloud#92", "student", "C"),
+                        ("What does two-factor authentication add?", "A second verification step", "A bigger monitor", "A faster CPU", "A public link", "A"),
+                    ]
+                for index, (text, a, b, c, d, correct) in enumerate(demo_questions, start=1):
+                    db.add(Question(
+                        exam_id=exam.id,
+                        question_text=text,
+                        option_a=a,
+                        option_b=b,
+                        option_c=c,
+                        option_d=d,
+                        correct_option=correct,
+                        marks=1.0,
+                        sort_order=index,
+                    ))
+            db.commit()
     finally:
         db.close()
 

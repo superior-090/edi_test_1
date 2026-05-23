@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -179,14 +181,30 @@ class _StreamFeed extends StatefulWidget {
 }
 
 class _StreamFeedState extends State<_StreamFeed> {
+  Timer? _refreshTimer;
   bool _hadFrame = false;
+  int _cacheKey = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _cacheKey++);
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final api = context.read<AppState>().api;
     final url = widget.side
-        ? api.getSideStreamUrl(widget.sessionId)
-        : api.getStreamUrl(widget.sessionId);
+        ? api.getSideSnapshotUrl(widget.sessionId, _cacheKey)
+        : api.getFrontRawSnapshotUrl(widget.sessionId, _cacheKey);
     debugPrint('Proctor feed attempted URL: $url');
     return Image.network(
       url,
@@ -212,7 +230,7 @@ class _StreamFeedState extends State<_StreamFeed> {
         if (progress == null) return child;
         return Center(
           child: Text(
-            _hadFrame ? 'Refreshing feed' : widget.emptyText,
+            _hadFrame ? 'Refreshing feed...' : widget.emptyText,
             textAlign: TextAlign.center,
           ),
         );

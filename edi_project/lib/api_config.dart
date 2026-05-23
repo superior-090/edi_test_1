@@ -51,7 +51,8 @@ class ApiConfig {
   static String get _fallbackBaseUrl {
     if (_defaultBaseUrl.isNotEmpty) return _defaultBaseUrl;
     final host = Uri.base.host.toLowerCase();
-    final localWeb = kDebugMode ||
+    final localWeb =
+        kDebugMode ||
         host == 'localhost' ||
         host == '127.0.0.1' ||
         host.startsWith('192.168.') ||

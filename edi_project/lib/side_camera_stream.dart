@@ -30,6 +30,21 @@ SideCameraStreamInfo resolveSideCameraStream(String rawValue) {
   }
 
   if (lower.startsWith('http://') || lower.startsWith('https://')) {
+    final uri = Uri.tryParse(value);
+    if (uri == null) {
+      return const SideCameraStreamInfo(
+        url: '',
+        type: SideCameraStreamType.invalid,
+      );
+    }
+    final path = uri.path.replaceAll(RegExp(r'/+$'), '');
+    if (path.isEmpty) {
+      final streamUri = uri.replace(path: '/video');
+      return SideCameraStreamInfo(
+        url: streamUri.toString(),
+        type: SideCameraStreamType.mjpeg,
+      );
+    }
     return SideCameraStreamInfo(url: value, type: SideCameraStreamType.mjpeg);
   }
 

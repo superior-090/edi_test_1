@@ -162,10 +162,29 @@ class _AdminPanelState extends State<AdminPanel> {
       } else {
         _sessions.remove(sessionId);
       }
+      final incomingEvents = <Map<String, dynamic>>[];
       final latest = data['latest_event'];
-      if (current && latest is Map) {
-        _events.insert(0, Map<String, dynamic>.from(latest));
-        if (_events.length > 80) _events.removeLast();
+      if (latest is Map) {
+        incomingEvents.add(Map<String, dynamic>.from(latest));
+      }
+      final events = data['events'];
+      if (events is List) {
+        incomingEvents.addAll(
+          events
+              .whereType<Map>()
+              .map((event) => Map<String, dynamic>.from(event)),
+        );
+      }
+      if (current && incomingEvents.isNotEmpty) {
+        for (final event in incomingEvents.reversed) {
+          _events.insert(0, {
+            'session_id': sessionId,
+            ...event,
+          });
+        }
+        while (_events.length > 80) {
+          _events.removeLast();
+        }
       }
       _recalculateStats();
     });
@@ -658,7 +677,7 @@ class _DashboardCameraPairState extends State<_DashboardCameraPair> {
         Expanded(
           child: _DashboardCameraThumb(
             label: 'Front',
-            url: api.getSnapshotUrl(widget.sessionId, _cacheKey),
+            url: api.getFrontRawSnapshotUrl(widget.sessionId, _cacheKey),
           ),
         ),
         const SizedBox(width: 8),
@@ -697,8 +716,11 @@ class _DashboardCameraThumb extends StatelessWidget {
               url,
               fit: BoxFit.cover,
               gaplessPlayback: true,
-              errorBuilder: (context, error, stackTrace) => const Center(
-                child: Icon(Icons.videocam_off, color: Colors.white38),
+              errorBuilder: (context, error, stackTrace) => Center(
+                child: Tooltip(
+                  message: url,
+                  child: const Icon(Icons.videocam_off, color: Colors.white38),
+                ),
               ),
             ),
             Positioned(

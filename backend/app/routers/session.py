@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ from ..state import manager, store_side_frame
 router = APIRouter(prefix="/session", tags=["session"])
 logger = logging.getLogger(__name__)
 QUESTION_IMAGE_DIR = Path(__file__).resolve().parents[2] / "uploads" / "question_images"
+LOCAL_DEMO_MODE = os.getenv("LOCAL_DEMO_MODE", "").strip().lower() in {"1", "true", "yes"}
 
 
 def _cv2():
@@ -210,19 +212,29 @@ async def start_session(
             payload.subject = subject.subject_code
 
     side_camera_frame = None
-    try:
-        side_camera_url, side_camera_frame = validate_side_camera_url(payload.side_camera_url)
-    except ValueError as exc:
+    if LOCAL_DEMO_MODE:
         side_camera_url = normalize_side_camera_url(payload.side_camera_url)
         if side_camera_url.lower().startswith("rtsp://"):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        logger.warning(
-            "Browser-validated side camera accepted without initial backend frame; "
-            "session_id=%s url=%s error=%s",
+            raise HTTPException(status_code=400, detail="RTSP side-camera streams are not supported")
+        logger.info(
+            "Local demo mode accepted browser-validated side camera; session_id=%s url=%s",
             payload.session_id,
             side_camera_url,
-            exc,
         )
+    else:
+        try:
+            side_camera_url, side_camera_frame = validate_side_camera_url(payload.side_camera_url)
+        except ValueError as exc:
+            side_camera_url = normalize_side_camera_url(payload.side_camera_url)
+            if side_camera_url.lower().startswith("rtsp://"):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            logger.warning(
+                "Browser-validated side camera accepted without initial backend frame; "
+                "session_id=%s url=%s error=%s",
+                payload.session_id,
+                side_camera_url,
+                exc,
+            )
 
     previous = (
         db.query(SessionModel)
@@ -338,7 +350,7 @@ def get_status(
     return admin_session_payload(session, "status") if is_staff_role(user.role) else student_session_payload(session, "status")
 
 
-def _raw_side_stream(session_id: str):
+async def _raw_side_stream(session_id: str):
     db = SessionLocal()
     frames_sent = 0
     fps_window_at = time.monotonic()
@@ -360,7 +372,7 @@ def _raw_side_stream(session_id: str):
                 )
                 frames_sent = 0
                 fps_window_at = now
-            time.sleep(0.1)
+            import asyncio; await asyncio.sleep(0.1)
     except GeneratorExit:
         pass
     except Exception:
@@ -557,13 +569,16 @@ def exam_question_image_file(
 
 
 @router.get("/{session_id}/side-stream")
-def student_side_stream(
+async def student_side_stream(
     session_id: str,
     token: str,
     db: Session = Depends(get_db),
 ):
     user = _media_user(token, db)
-    _authorize_session_media(session_id, db, user)
+    session_obj = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _authorize_session_access(session_obj, user)
     return StreamingResponse(
         _raw_side_stream(session_id),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -578,7 +593,10 @@ def student_side_snapshot(
     db: Session = Depends(get_db),
 ):
     user = _media_user(token, db)
-    _authorize_session_media(session_id, db, user)
+    session_obj = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _authorize_session_access(session_obj, user)
     frame = _student_side_frame(session_id, db)
     if not frame:
         raise HTTPException(status_code=404, detail="Side frame not available yet")

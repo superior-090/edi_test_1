@@ -11,6 +11,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'app_state.dart';
 import 'design_system.dart';
 import 'exam_copy_guard.dart';
+import 'front_camera_web_uploader.dart';
 import 'side_camera_stream.dart';
 
 void _noop() {}
@@ -101,6 +102,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   bool _submitting = false;
   bool _submitted = false;
   bool _closingDialogVisible = false;
+  bool _preferBrowserFrontCapture = false;
   bool _sideReconnectBusy = false;
   bool _sessionStarted = false;
   bool _startingSession = false;
@@ -237,7 +239,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     _startClock();
     _startAutosave();
     await _ensureCameraInitialized();
-    if (_cameraReady) {
+    if (_cameraReady || kIsWeb) {
       _startFrameUpload();
     }
   }
@@ -405,24 +407,46 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _uploadFrontFrame() async {
-    final controller = _cameraController;
-    if (_uploading ||
-        controller == null ||
-        !controller.value.isInitialized ||
-        controller.value.isTakingPicture) {
-      return;
-    }
+    if (_uploading) return;
 
     _uploading = true;
     final api = context.read<AppState>().api;
     try {
-      final image = await controller.takePicture();
-      final bytes = await image.readAsBytes();
-      final result = await api.uploadFrame(
-        bytes,
-        _sessionId,
-        filename: image.name.isEmpty ? 'front-camera.jpg' : image.name,
+      Map<String, dynamic>? result;
+      final sentOverSocket = await sendBrowserFrontFrameOverWebSocket(_channel);
+      if (sentOverSocket) {
+        debugPrint('Front frame sent over websocket; session=$_sessionId');
+        if (mounted) setState(() => _connected = true);
+        return;
+      }
+      final controller = _cameraController;
+      if (!_preferBrowserFrontCapture &&
+          controller != null &&
+          controller.value.isInitialized &&
+          !controller.value.isTakingPicture) {
+        try {
+          final image = await controller.takePicture();
+          final bytes = await image.readAsBytes();
+          result = await api.uploadFrame(
+            bytes,
+            _sessionId,
+            filename: image.name.isEmpty ? 'front-camera.jpg' : image.name,
+          );
+        } catch (error, stackTrace) {
+          _preferBrowserFrontCapture = true;
+          debugPrint(
+            'Flutter camera frame upload failed, trying browser capture: '
+            '$error\n$stackTrace',
+          );
+        }
+      }
+      result ??= await uploadBrowserFrontFrame(
+        uploadUri: api.frameUploadUri(_sessionId),
+        token: api.token,
       );
+      if (result == null) {
+        throw StateError('No front camera capture method is available');
+      }
       debugPrint('Front frame uploaded; session=$_sessionId');
       _handleRealtime(result);
       if (mounted) setState(() => _connected = true);
@@ -608,7 +632,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
     if (_submitted || !_monitoringStarted) return;
     _startSideCameraWatchdog();
     if (_clockTimer == null || !_clockTimer!.isActive) _startClock();
-    if (_cameraReady) _startFrameUpload();
+    if (_cameraReady || kIsWeb) _startFrameUpload();
   }
 
   Future<void> _showClosedDialog(String message) async {
@@ -769,119 +793,141 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildQuestionPanel(_Question question) {
-    return GlassCard(
-      borderColor: AiColors.cyan.withValues(alpha: 0.2),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return SelectionContainer.disabled(
+      child: GlassCard(
+        borderColor: AiColors.cyan.withValues(alpha: 0.2),
+        child: Stack(
+          fit: StackFit.expand,
           children: [
-            Row(
-              children: [
-                Text(
-                  'Question ${_currentIndex + 1} of ${_questions.length}',
-                  style: const TextStyle(color: Colors.white70),
-                ),
-                const Spacer(),
-                Text(
-                  '${((_currentIndex + 1) / _questions.length * 100).round()}% complete',
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            LinearProgressIndicator(
-              value: (_currentIndex + 1) / _questions.length,
-            ),
-            const SizedBox(height: 24),
-            Expanded(
-              child: _loadingQuestions
-                  ? const Center(child: CircularProgressIndicator())
-                  : question.isImageOnly
-                  ? _buildImageQuestion(question)
-                  : _buildTextQuestion(question),
-            ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: List.generate(
-                _questions.length,
-                (index) => ChoiceChip(
-                  selected: index == _currentIndex,
-                  label: Text('${index + 1}'),
-                  avatar:
-                      _answers.containsKey(_questions[index].answerKey(index))
-                      ? const Icon(Icons.check, size: 16)
-                      : _reviewQuestionKeys.contains(
-                          _questions[index].answerKey(index),
-                        )
-                      ? const Icon(Icons.flag, size: 16)
-                      : null,
-                  onSelected: (_) => setState(() => _currentIndex = index),
-                ),
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Question ${_currentIndex + 1} of ${_questions.length}',
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '${((_currentIndex + 1) / _questions.length * 100).round()}% complete',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  LinearProgressIndicator(
+                    value: (_currentIndex + 1) / _questions.length,
+                  ),
+                  const SizedBox(height: 24),
+                  Expanded(
+                    child: _loadingQuestions
+                        ? const Center(child: CircularProgressIndicator())
+                        : question.isImageOnly
+                        ? _buildImageQuestion(question)
+                        : _buildTextQuestion(question),
+                  ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: List.generate(
+                      _questions.length,
+                      (index) => ChoiceChip(
+                        selected: index == _currentIndex,
+                        label: Text('${index + 1}'),
+                        avatar:
+                            _answers.containsKey(
+                              _questions[index].answerKey(index),
+                            )
+                            ? const Icon(Icons.check, size: 16)
+                            : _reviewQuestionKeys.contains(
+                                _questions[index].answerKey(index),
+                              )
+                            ? const Icon(Icons.flag, size: 16)
+                            : null,
+                        onSelected: (_) =>
+                            setState(() => _currentIndex = index),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: OutlinedButton.icon(
+                          onPressed: _currentIndex == 0
+                              ? null
+                              : () => setState(() => _currentIndex--),
+                          icon: const Icon(Icons.chevron_left),
+                          label: const Text('Previous'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            final answerKey = question.answerKey(
+                              _currentIndex,
+                            );
+                            setState(() {
+                              if (!_reviewQuestionKeys.remove(answerKey)) {
+                                _reviewQuestionKeys.add(answerKey);
+                              }
+                            });
+                          },
+                          icon: const Icon(Icons.flag),
+                          label: Text(
+                            _reviewQuestionKeys.contains(
+                                  question.answerKey(_currentIndex),
+                                )
+                                ? 'Unmark'
+                                : 'Review',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: OutlinedButton.icon(
+                          onPressed: _currentIndex == _questions.length - 1
+                              ? null
+                              : () => setState(() => _currentIndex++),
+                          icon: const Icon(Icons.chevron_right),
+                          label: const Text('Next'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton.icon(
+                            onPressed: _submitting ? null : () => _submitExam(),
+                            icon: _submitting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.task_alt),
+                            label: const Text('Submit Exam'),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Flexible(
-                  child: OutlinedButton.icon(
-                    onPressed: _currentIndex == 0
-                        ? null
-                        : () => setState(() => _currentIndex--),
-                    icon: const Icon(Icons.chevron_left),
-                    label: const Text('Previous'),
-                  ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _WatermarkOverlay(
+                  studentName: widget.studentName,
+                  studentId: widget.studentId,
                 ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      final answerKey = question.answerKey(_currentIndex);
-                      setState(() {
-                        if (!_reviewQuestionKeys.remove(answerKey)) {
-                          _reviewQuestionKeys.add(answerKey);
-                        }
-                      });
-                    },
-                    icon: const Icon(Icons.flag),
-                    label: Text(
-                      _reviewQuestionKeys.contains(
-                            question.answerKey(_currentIndex),
-                          )
-                          ? 'Unmark'
-                          : 'Review',
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: OutlinedButton.icon(
-                    onPressed: _currentIndex == _questions.length - 1
-                        ? null
-                        : () => setState(() => _currentIndex++),
-                    icon: const Icon(Icons.chevron_right),
-                    label: const Text('Next'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton.icon(
-                      onPressed: _submitting ? null : () => _submitExam(),
-                      icon: _submitting
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.task_alt),
-                      label: const Text('Submit Exam'),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ],
         ),
@@ -1154,7 +1200,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
         _sessionId,
       );
       _handleRealtime(result);
-      if (mounted && !_sideCameraNeedsReconnect && _cameraReady) {
+      if (mounted && !_sideCameraNeedsReconnect && (_cameraReady || kIsWeb)) {
         _startFrameUpload();
       }
     } catch (error, stackTrace) {
@@ -1235,7 +1281,7 @@ class _ExamScreenState extends State<ExamScreen> with WidgetsBindingObserver {
             : result['side_camera_url']?.toString() ?? streamInfo.url;
         await app.rememberSideCameraUrl(usableUrl);
         _sideCameraUrl = usableUrl;
-        if (mounted && _cameraReady) _startFrameUpload();
+        if (mounted && (_cameraReady || kIsWeb)) _startFrameUpload();
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

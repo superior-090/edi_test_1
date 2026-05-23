@@ -206,16 +206,23 @@ async def upload_frame(
         raise HTTPException(status_code=409, detail="Session already closed")
 
     contents = await file.read()
-    frame = _decode_frame(contents)
-    if frame is None:
-        raise HTTPException(status_code=400, detail="Invalid image")
-
     store_frame(session_id, contents)
     logger.info(
         "Front frame received; session_id=%s bytes=%s",
         session_id,
         len(contents),
     )
+
+    frame = _decode_frame(contents)
+    if frame is None:
+        logger.warning("Front frame stored but AI decode failed; session_id=%s", session_id)
+        return _student_response(session)
+
+    # Keep the browser upload loop fast. The proctor snapshot/stream endpoints
+    # can serve this raw frame immediately; expensive AI and side-camera reads
+    # should not block the student's camera upload or exam submission.
+    return _student_response(session)
+
     cv2 = _cv2()
     try:
         detection = await _run_blocking(

@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import json
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -23,6 +25,7 @@ from ..state import (
     latest_side_annotated_frames,
     latest_side_frames,
     manager,
+    store_frame,
 )
 
 router = APIRouter(tags=["admin"])
@@ -38,8 +41,14 @@ def _cv2():
 
 
 def _current_session_filter():
+    recent_cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
     return or_(
-        SessionModel.is_active == True,
+        (
+            (SessionModel.is_active == True)
+            & (SessionModel.is_submitted == False)
+            & (SessionModel.is_terminated == False)
+            & (SessionModel.updated_at >= recent_cutoff)
+        ),
         SessionModel.approval_status == "PENDING",
     )
 
@@ -291,12 +300,16 @@ async def flag_session(
     return session
 
 
+import asyncio
+
 def _stream(session_id: str):
-    while True:
-        frame = latest_annotated_frames.get(session_id) or latest_frames.get(session_id)
-        if frame:
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-        time.sleep(0.25)
+    async def generator():
+        while True:
+            frame = latest_annotated_frames.get(session_id) or latest_frames.get(session_id)
+            if frame:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            await asyncio.sleep(0.25)
+    return generator()
 
 
 @router.get("/admin/stream/{session_id}")
@@ -309,6 +322,18 @@ def snapshot(session_id: str):
     frame = latest_annotated_frames.get(session_id) or latest_frames.get(session_id)
     if not frame:
         raise HTTPException(status_code=404, detail="Frame not available yet")
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/admin/snapshot/{session_id}/front-raw")
+def front_raw_snapshot(session_id: str):
+    frame = latest_frames.get(session_id)
+    if not frame:
+        raise HTTPException(status_code=404, detail="Front frame not available yet")
     return Response(
         content=frame,
         media_type="image/jpeg",
@@ -333,14 +358,14 @@ def _side_frame(session_id: str, db: Session):
     return latest_side_annotated_frames.get(session_id) or latest_side_frames.get(session_id)
 
 
-def _side_stream(session_id: str):
+async def _side_stream(session_id: str):
     db = SessionLocal()
     try:
         while True:
             frame = _side_frame(session_id, db)
             if frame:
                 yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-            time.sleep(0.1)
+            await asyncio.sleep(0.25)
     finally:
         db.close()
 
@@ -493,6 +518,17 @@ async def ws_session(session_id: str, websocket: WebSocket):
                     message = {"type": text}
                 if message.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+                elif message.get("type") == "front_frame":
+                    payload = str(message.get("data") or "")
+                    if "," in payload:
+                        payload = payload.split(",", 1)[1]
+                    try:
+                        frame = base64.b64decode(payload)
+                    except Exception:
+                        frame = b""
+                    if frame:
+                        store_frame(session_id, frame)
+                        await websocket.send_json({"type": "front_frame_ack"})
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
